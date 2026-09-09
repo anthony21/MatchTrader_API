@@ -1,0 +1,192 @@
+[
+  {
+    "name": "platform_details",
+    "class_name": "GetPlatformDetails",
+    "method": "GET",
+    "path": "/manager/platform-details",
+    "write": false,
+    "request": null,
+    "response": "Platform",
+    "collection": null
+  },
+  {
+    "name": "register",
+    "class_name": "Register",
+    "method": "POST",
+    "path": "/manager/user",
+    "write": true,
+    "request": "RegisterRequest",
+    "response": "Token",
+    "collection": null
+  },
+  {
+    "name": "login",
+    "class_name": "Login",
+    "method": "POST",
+    "path": "/manager/mtr-login",
+    "write": false,
+    "request": "LoginRequest",
+    "response": "Authentication",
+    "collection": null
+  },
+  {
+    "name": "refresh_token",
+    "class_name": "RefreshToken",
+    "method": "POST",
+    "path": "/manager/refresh-token",
+    "write": false,
+    "request": null,
+    "response": null,
+    "collection": null
+  },
+  {
+    "name": "login_with_token",
+    "class_name": "LoginWithToken",
+    "method": "POST",
+    "path": "/manager/login/co/with-token",
+    "write": false,
+    "request": "LoginWithTokenRequest",
+    "response": "Authentication",
+    "collection": null
+  },
+  {
+    "name": "quotes",
+    "class_name": "GetQuotes",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/quotations",
+    "write": false,
+    "request": "QuotesRequest",
+    "response": "Quote",
+    "collection": "body"
+  },
+  {
+    "name": "balance",
+    "class_name": "GetBalance",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/balance",
+    "write": false,
+    "request": null,
+    "response": "Balance",
+    "collection": null
+  },
+  {
+    "name": "instruments",
+    "class_name": "GetInstruments",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/effective-instruments",
+    "write": false,
+    "request": null,
+    "response": "Instrument",
+    "collection": "instruments"
+  },
+  {
+    "name": "candles",
+    "class_name": "GetCandles",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/candles",
+    "write": false,
+    "request": "CandlesRequest",
+    "response": "Candle",
+    "collection": "candles"
+  },
+  {
+    "name": "open_positions",
+    "class_name": "GetOpenPositions",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/open-positions",
+    "write": false,
+    "request": null,
+    "response": "Position",
+    "collection": "positions"
+  },
+  {
+    "name": "open_position",
+    "class_name": "OpenPosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/open",
+    "write": true,
+    "request": "OpenPositionRequest",
+    "response": "Operation",
+    "collection": null
+  },
+  {
+    "name": "edit_position",
+    "class_name": "EditPosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/edit",
+    "write": true,
+    "request": "EditPositionRequest",
+    "response": "Operation",
+    "collection": null
+  },
+  {
+    "name": "partial_close",
+    "class_name": "PartialClose",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/close-partially",
+    "write": true,
+    "request": "PartialCloseRequest",
+    "response": "Operation",
+    "collection": null
+  },
+  {
+    "name": "close_position",
+    "class_name": "ClosePosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/close",
+    "write": true,
+    "request": "ClosePositionRequest",
+    "response": "Operation",
+    "collection": null
+  },
+  {
+    "name": "closed_positions",
+    "class_name": "GetClosedPositions",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/closed-positions",
+    "write": false,
+    "request": "ClosedPositionsRequest",
+    "response": "ClosedTrade",
+    "collection": "operations"
+  },
+  {
+    "name": "active_orders",
+    "class_name": "GetActiveOrders",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/active-orders",
+    "write": false,
+    "request": null,
+    "response": "Order",
+    "collection": "orders"
+  },
+  {
+    "name": "create_pending_order",
+    "class_name": "CreatePendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/create",
+    "write": true,
+    "request": "CreatePendingOrderRequest",
+    "response": "Operation",
+    "collection": null
+  },
+  {
+    "name": "edit_pending_order",
+    "class_name": "EditPendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/edit",
+    "write": true,
+    "request": "EditPendingOrderRequest",
+    "response": null,
+    "collection": null
+  },
+  {
+    "name": "cancel_pending_order",
+    "class_name": "CancelPendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/cancel",
+    "write": true,
+    "request": "CancelPendingOrderRequest",
+    "response": "Operation",
+    "collection": null
+  }
+]

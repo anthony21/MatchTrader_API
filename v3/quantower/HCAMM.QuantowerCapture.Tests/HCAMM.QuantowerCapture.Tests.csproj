@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <QuantowerBin Condition="'$(QuantowerBin)' == ''">C:\Quantower\TradingPlatform\v1.146.18\bin</QuantowerBin>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../HCAMM.QuantowerCapture/HCAMM.QuantowerCapture.csproj" />
+    <Reference Include="TradingPlatform.BusinessLayer"><HintPath>$(QuantowerBin)\TradingPlatform.BusinessLayer.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+</Project>

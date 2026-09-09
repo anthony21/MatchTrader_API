@@ -1,0 +1,37 @@
+import pytest
+from pydantic import ValidationError
+
+from matchtrader.core.settings import Settings
+
+
+def test_env_precedence_and_hidden_secrets(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("MTR_PLATFORM_URL=https://broker.example\nMTR_PASSWORD=do-not-print\nMTR_ACCOUNT_ID=1")
+    monkeypatch.setenv("MTR_ACCOUNT_ID", "2")
+    s = Settings.from_env(env)
+    assert s.account_id == "2"
+    assert s.password.get_secret_value() == "do-not-print"
+    assert "do-not-print" not in repr(s)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://broker.example",
+        "https://user:pass@broker.example",
+        "https://broker.example/path",
+        "https://broker.example?token=x",
+    ],
+)
+def test_bad_origin_rejected(url):
+    with pytest.raises(ValidationError):
+        Settings(platform_url=url)
+
+
+def test_bad_ws_headers_and_limits():
+    with pytest.raises(ValidationError):
+        Settings(platform_url="https://broker.example", ws_headers_json="[]")
+    with pytest.raises(ValidationError):
+        Settings(platform_url="https://broker.example", requests_per_minute=501)
+    with pytest.raises(ValidationError):
+        Settings(platform_url="https://broker.example", system_uuid="../../other")
