@@ -15,7 +15,7 @@ defineEmits(['update:selected', 'connect', 'start', 'stop'])
       </select>
     </div>
     <button class="secondary" :disabled="busy || state.running || !selected" @click="$emit('connect')">
-      Connect account
+      Log in
     </button>
     <div class="control-divider"></div>
     <button class="primary" :disabled="busy || state.running || !selected" @click="$emit('start')">

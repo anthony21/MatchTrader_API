@@ -1,14 +1,14 @@
 <script setup>
+import { localTime as timestamp } from '../time.js'
 defineProps({ events: Array })
 const display = value => value === null || value === undefined || value === '' ? '—' : value
-const timestamp = value => value ? value.replace('T', ' ').replace(/\.\d+/, '').replace('+00:00', 'Z') : '—'
 </script>
 
 <template>
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Source time</th><th>Bridge receipt · UTC</th><th>Instrument / side</th><th>Event / type</th>
+        <th>Source time · local</th><th>Bridge receipt · local</th><th>Instrument / side</th><th>Event / type</th>
         <th class="number">Lots</th><th class="number">Entry</th><th class="number">Stop loss</th>
         <th class="number">Take profit</th><th>Status</th><th>Broker ID</th>
       </tr></thead>

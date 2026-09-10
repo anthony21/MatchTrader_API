@@ -37,7 +37,7 @@ async function save() {
       destination_account: destination.value, sources: sources.value, symbols,
       exclusive_destination: exclusive.value, legacy_route_disabled: legacyDisabled.value,
     } })
-    message.value = 'Settings saved. Enable copying on the Trading bridge page when ready.'
+    message.value = 'Settings saved. Allow API trading on the Trading bridge page when ready.'
     emit('saved')
   } catch (err) { error.value = err.message }
   finally { busy.value = false }
@@ -48,7 +48,7 @@ async function save() {
   <section class="card copy-settings">
     <h2>Copy settings</h2>
     <p>Use the quantities, entry, SL and TP actually submitted by Quantower. Saving settings keeps copying off.</p>
-    <p v-if="state.copying" role="alert">Stop copying on the Trading bridge page before editing settings.</p>
+    <p v-if="state.copying" role="alert">Stop API trading on the Trading bridge page before editing settings.</p>
     <form @submit.prevent="save">
       <fieldset :disabled="busy || state.copying">
         <legend>Source and destination</legend>
@@ -95,8 +95,8 @@ async function save() {
     <p v-if="message" role="status">{{ message }}</p>
     <details open><summary>P01 RR setup</summary>
       <p>Choose Manual mode (0) in P01, select the intended chart account, and set its risk/size, entry, SL and TP. This integration captures its accepted native orders. P01 must submit to Quantower: with “Arm live orders” off, or its companion panel forcing signal-only delivery, no native order is available to copy.</p>
-      <p>The capture extension logs QT requests and the separate Aqua result in Strategy Manager’s Time/Message board. Start capture and connect the destination, then use Enable copying on the Trading bridge page. Existing orders and events received while copying is off are not replayed.</p>
-      <p>Stop copying disables all forwarding, including edits, cancellations and closes. Existing Aqua orders remain at the broker. Copying starts off after every application restart.</p>
+      <p>The capture extension logs QT requests and the separate Aqua result in Strategy Manager’s Time/Message board. Start capture and connect the destination, then use Allow API trading on the Trading bridge page. Existing orders and events received while copying is off are not replayed.</p>
+      <p>Stop API trading disables all forwarding, including edits, cancellations and closes. Existing Aqua orders remain at the broker. Copying starts off after every application restart.</p>
     </details>
   </section>
 </template>
