@@ -24,10 +24,10 @@ from mocked tests, browser access, or the presence of an endpoint in documentati
    does not grant that AI desktop access, browser sessions, or broker credentials.
 3. Locate `.env` without printing its contents. Check for Windows `.env.txt`
    naming mistakes. Never overwrite an existing credentials file with the example.
-4. Install from `requirements.lock` into a virtual environment, then install this
-   project with `pip install --no-deps -e .`. See README for Docker alternatives.
+4. Use Poetry 2.2 or later (2.x). Run `poetry install --with test` to install
+   this project and its locked dependencies into `v4/.venv`. See README for Docker alternatives.
 5. Run offline tests before changes, or the relevant checks after changes. Use
-   `python -m pytest` and `ruff check src tests scripts`. Add a meaningful test for
+   `poetry run python -m pytest` and `poetry run ruff check src tests scripts`. Add a meaningful test for
    each new library module; `test_module_coverage.py` enforces module coverage.
 
 ## v3 native capture
@@ -89,7 +89,7 @@ Only `.env.example` with placeholders belongs in a distribution.
 
 ## Ship a reviewable handoff
 
-Run `python scripts/build_handoff.py --output dist/matchtrader-v4-handoff.zip`.
+Run `poetry run python scripts/build_handoff.py --output dist/matchtrader-v4-handoff.zip`.
 The archive contains allowlisted source, tests, docs, dependency locks, container
 files, and these agent/skill instructions. It excludes `.env`, data, local logs,
 screenshots, browser profiles, caches, and the virtual environment. Inspect the
@@ -98,3 +98,13 @@ manifest and report tests and unresolved live/Docker validation honestly.
 The recipient must supply their own terminal URL, credentials, and account IDs.
 They should start with `matchtrader platform`, then an account-specific balance
 read. A fresh AI may need browser/desktop tools connected separately.
+
+
+## Incoming workspace 0.3.0
+
+Incoming trades are rendered in React, mounted by the existing Vue shell.
+See [event meanings and UI behavior](docs/INCOMING_TRADES.md). Other workspace pages remain Vue.
+
+
+Application 0.5.0 implements the native [Quantower WebSocket receiver](docs/QUANTOWER_WEBSOCKET_RECEIVER.md).
+The C# extension remains a separate sender deployment.

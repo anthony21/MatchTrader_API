@@ -5,6 +5,14 @@ refresh while visible. The bridge page has a separate native Quantower feed and
 copying control. See [capture setup](QUANTOWER_CAPTURE.md); the shadow-only statements
 below describe the legacy `/events` and CSV observation paths.
 
+Orders shows broker-provided P/L on open positions (net profit when available,
+otherwise profit). Pending orders display “pending” because they have no P/L
+until filled. Missing position P/L remains unavailable instead of becoming zero.
+Snapshot, event, creation and opening times display in the browser's local timezone,
+including daylight saving time. Order creation uses `creationTimeIso` when supplied;
+position opening prefers `openTimeMillis`. Text without a timezone or epoch is
+marked “timezone unavailable” rather than silently assuming UTC or local time.
+
 # Vue dashboard and shadow bridge
 
 ## Run on Windows
@@ -154,3 +162,19 @@ an isolated backend on port 8766 with temporary test accounts and a temporary le
 it does not load your `.env` or contact a broker. Unit tests likewise block broker
 network access. Browser test artifacts contain test data only and are excluded
 from the handoff.
+
+
+## Incoming workspace 0.3.0
+
+Incoming trades are rendered in React, mounted by the existing Vue shell.
+See [event meanings and UI behavior](INCOMING_TRADES.md). Other workspace pages remain Vue.
+
+
+Native events use authenticated SSE push in 0.4.0; see [stream behavior](INCOMING_TRADES.md#live-push-040).
+
+
+Application 0.5.0 implements the native [Quantower WebSocket receiver](QUANTOWER_WEBSOCKET_RECEIVER.md).
+The C# extension remains a separate sender deployment.
+
+
+Application 0.6.0 replaces the Orders route with a [React trading workspace](ORDERS_WORKSPACE.md).

@@ -8,7 +8,8 @@ Run installation, tests, CLI commands and Docker Compose from that folder:
 
 ```powershell
 Set-Location .\v4
-.venv/Scripts/python -m matchtrader.dashboard.cli
+poetry install
+poetry run python -m matchtrader.dashboard.cli
 ```
 
 The dashboard is available at http://127.0.0.1:8765 when running. Its credentials

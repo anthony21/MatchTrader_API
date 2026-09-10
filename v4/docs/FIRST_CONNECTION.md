@@ -19,6 +19,25 @@ session cookie. The SDK keeps these values on the backend and refreshes the sess
 
 ## Local application setup
 
+For the Aqua Windows installation tested on September 9, 2026, set
+`MTR_TLS_MINIMUM_VERSION=TLSv1.3` in the private `.env` and restart the dashboard.
+Two alternating comparisons returned HTTP 403 with `cf-mitigated: challenge`
+under the default Python TLS policy, and HTTP 200 when the client required TLS 1.3.
+Both used the same credentials, JSON, SDK User-Agent and HTTP/1.1, without imported
+cookies. A standalone Node HTTPS login also returned HTTP 200. Requiring TLS 1.3
+changes the handshake offered to the server; the broker's exact filtering rule
+is unknown. This is a verified configuration for that host, not a guarantee for
+every broker or machine. Certificate and hostname verification remain enabled.
+The SDK and `.env.example` now require TLS 1.3 by default. TLS 1.2 remains an
+explicit compatibility override for a broker that requires it.
+
+With the new setting loaded from `.env`, the actual SDK returned HTTP 200 for
+login, balance, refresh, and balance after refresh. Restarting the local dashboard
+and calling its existing `/api/connect` control also verified the selected account
+and reported `connected`. Capture and copying remained off; no trades were submitted.
+The related change passed 218 offline Python tests and Ruff. These checks establish
+login/read/renewal behavior on this installation, not live order execution.
+
 1. Preserve the existing `.env`. Fill `MTR_PLATFORM_URL`, `MTR_EMAIL`,
    `MTR_PASSWORD`, and `MTR_ACCOUNT_ID` with broker-provided details.
 2. Start the dashboard using `docs/DASHBOARD.md`. Click **Connect account**.

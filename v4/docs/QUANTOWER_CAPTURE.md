@@ -2,6 +2,10 @@
 
 # Quantower capture and order lifecycle (v4)
 
+Application **0.2.0** adds [explicit trade mappings and partial execution evidence](TRADE_MAPPING.md).
+Use the versioned event schema in that document for the new C# publisher. Existing
+version-1 events remain accepted; no extension deployment is included in this change.
+
 The Windows C# extension observes native Quantower requests, results, orders,
 fills and positions. It persists an outbox and posts to Python's authenticated
 `/capture/events`. Python assigns one UUID trade ID per machine, connection,
@@ -82,7 +86,7 @@ after the local disk write; no callback mechanism can recover an event lost befo
 Use the **Copy settings** sidebar page. Alternatively, pass a private route file with
 `--route data/quantower-route.json` to the dashboard.
 The service starts disarmed on every launch. Connect the explicitly chosen demo
-destination, start capture, then use **Enable copying**. **Stop copying** stops new
+destination, start capture, then use **Allow API trading**. **Stop API trading** stops new
 dispatch; it does not undo an already submitted request or close existing orders.
 `Stop & disconnect` also disarms. A real-money destination cannot be armed by this bridge.
 
@@ -154,3 +158,7 @@ attribution and a controlled source-order test, including fill/position identity
 References: [Quantower Core](https://api.quantower.com/docs/TradingPlatform.BusinessLayer.Core.html),
 [request parameters](https://api.quantower.com/docs/TradingPlatform.BusinessLayer.RequestParameters.html),
 [Match-Trader Platform API](https://app.theneo.io/match-trade/platform-api/).
+
+
+Application 0.5.0 implements the native [Quantower WebSocket receiver](QUANTOWER_WEBSOCKET_RECEIVER.md).
+The C# extension remains a separate sender deployment.

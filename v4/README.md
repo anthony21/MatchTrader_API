@@ -2,6 +2,9 @@
 
 # Match-Trader Python client
 
+Current release: **0.2.0**. See [trade mappings and the C# event contract](docs/TRADE_MAPPING.md)
+for separate source/broker IDs, partial fills, split/merged positions and schema versions.
+
 This is the **v4 application iteration**. Run all commands from this folder.
 See [versioning](docs/VERSIONING.md) for its layout and next-iteration workflow.
 
@@ -18,10 +21,10 @@ From this project folder, after installing the Python dependencies:
 ```powershell
 npm.cmd --prefix frontend ci
 npm.cmd --prefix frontend run build
-.venv/Scripts/python -m matchtrader.dashboard.cli
+poetry run python -m matchtrader.dashboard.cli
 ```
 
-Open **http://127.0.0.1:8765**. Select an account and use **Connect account** to log in and discover other accounts. **Start capture** records new R01 ledger observations and accepts authenticated events; **Stop & disconnect** stops capture and closes the SDK connection. The dashboard remains available to restart capture. It starts stopped with copying disarmed. Native copying additionally needs saved Copy settings (or an explicit route file), a verified demo account and the Enable copying control; `.env` alone cannot arm it.
+Open **http://127.0.0.1:8765**. Select an account and use **Connect account** to log in and discover other accounts. **Start capture** records new R01 ledger observations and accepts authenticated events; **Stop & disconnect** stops capture and closes the SDK connection. The dashboard remains available to restart capture. It starts stopped with copying disarmed. Native copying additionally needs saved Copy settings (or an explicit route file), a verified demo account and the Allow API trading control; `.env` alone cannot arm it.
 
 Set `MTR_R01_LEDGER` to your local `R01_TRADES.csv` path to watch new strategy activity. The frontend displays observations, request previews, held events, and an independently refreshed broker pending-order snapshot. No historic ledger replay or invented lot sizes. See [dashboard setup](docs/DASHBOARD.md), [registration and first connection](docs/FIRST_CONNECTION.md), and [routing status](docs/DIRECT_ROUTING.md).
 
@@ -39,31 +42,36 @@ No credentials are needed to install the library or run its tests. Unit tests us
 
 Read [agent.md](agent.md), or ask another AI to read it. [AGENTS.md](AGENTS.md) points automatically discovered repository instructions to the same handoff. The portable [operations skill](.agents/skills/matchtrader-operations/SKILL.md) covers connection diagnosis, browser history export, account isolation, and evidence-based reconciliation.
 
-Create a source bundle with `python scripts/build_handoff.py --output dist/matchtrader-v2-handoff.zip`. It includes source, tests, skills, docs, dependency locks, and Docker files; it excludes local credentials and account data. The recipient supplies their own `.env` and browser/tool access. This is a source handoff, not an installer that grants broker access.
+Create a source bundle with `poetry run python scripts/build_handoff.py --output dist/matchtrader-v4-handoff.zip`. It includes source, tests, skills, docs, dependency locks, and Docker files; it excludes local credentials and account data. The recipient supplies their own `.env` and browser/tool access. This is a source handoff, not an installer that grants broker access.
 
 To reconcile an existing broker CSV with R01 records, run:
 
 ```powershell
-.venv/Scripts/python scripts/reconcile_r01.py --ledger /path/to/R01_TRADES.csv --broker /path/to/CLOSED_POSITIONS.csv --output data/comparison --start 2026-09-08T00:00:00Z --end 2026-09-09T00:00:00Z --account ACCOUNT_ID
+poetry run python scripts/reconcile_r01.py --ledger /path/to/R01_TRADES.csv --broker /path/to/CLOSED_POSITIONS.csv --output data/comparison --start 2026-09-08T00:00:00Z --end 2026-09-09T00:00:00Z --account ACCOUNT_ID
 ```
 
 Replace the window with the actual export bounds. Optional `--verdicts /path/to/PMM_VERDICTS.csv` and `--slogs /path/to/ScriptsData` preserve relay and Strategy Manager evidence. The command generates a filterable HTML table, complete CSV, alternative candidates, unmatched intents, source snapshots and summary. It treats level matches as candidates and leaves unobserved send/receipt times blank. It does not silently assign a timezone to a broker export.
 
 ### Local Python installation (Windows PowerShell)
 
-Requires Python 3.12 or later. From `C:\HCAMM\matchtrader-python\v2`:
+Requires Python 3.12 or later and [Poetry 2.2 or later (2.x)](https://python-poetry.org/docs/#installation). From the `v4` folder:
 
 ```powershell
-python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements.lock
-.venv/Scripts/python -m pip install --no-deps -e .
+poetry install
 Copy-Item .env.example .env
 # Edit .env locally before running the next commands.
-.venv/Scripts/matchtrader platform
-.venv/Scripts/matchtrader balance
+poetry run matchtrader platform
+poetry run matchtrader balance
 ```
 
-On Linux/macOS use `.venv/bin/python` and `.venv/bin/matchtrader`, and `cp .env.example .env`.
+Poetry creates the project environment in `.venv` and installs the versions in
+`poetry.lock`. The same `poetry` commands work on Linux/macOS; use
+`cp .env.example .env` to create the credentials file.
+
+Use `poetry add <package>` to add a runtime dependency or
+`poetry add --group test <package>` for test tools. After editing dependency
+constraints manually, run `poetry lock`. Commit `pyproject.toml` and `poetry.lock`
+together. Use `poetry sync --with test` to synchronize a development environment.
 
 ### Docker
 
@@ -205,9 +213,9 @@ This is the initial analysis foundation, not a claim that all possible financial
 ## Tests and validation
 
 ```powershell
-.venv/Scripts/python -m pip install -r requirements-test.lock
-.venv/Scripts/python -m pytest
-.venv/Scripts/ruff check src tests
+poetry install --with test
+poetry run python -m pytest
+poetry run ruff check src tests scripts
 ```
 
 There is a dedicated test file for every library module, enforced by `test_module_coverage.py`. Tests use mocked HTTP and socket transports and prohibit real socket connections. They cover the 19 endpoint contracts, all request/response shapes, shared-owner cleanup, settings/secret handling, error behavior, authentication refresh, WebSocket bounds, and numerical analysis. Test coverage and the exact final result are recorded in `docs/VALIDATION.md`.

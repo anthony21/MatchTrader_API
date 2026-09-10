@@ -6,7 +6,7 @@ Quantower account (its displayed account number and internal ID differ), select
 P01/manual sources, and configure each exact source symbol, destination symbol,
 quantity multiplier and maximum lots. Confirm equivalent instruments/prices and
 that no other relay is copying the same trades to this destination. Save settings,
-then select **Enable copying** on Trading bridge. Stop copying before editing settings.
+then select **Allow API trading** on Trading bridge. Stop API trading before editing settings.
 
 Settings are stored locally in `data/dashboard/copy-settings.json`. Saving settings
 does not log in again or replace the selected account's connection. The dashboard
@@ -15,7 +15,7 @@ arming, source route and broker-confirmed demo checks. The CLI/SDK read-only def
 outside this dashboard remains unchanged. Arming is never persisted. Events created
 before enabling copying, snapshots, old events, duplicates and unknown sources are held.
 
-**Stop copying disables creates, modifications, cancellations and closes.** Capture
+**Stop API trading disables creates, modifications, cancellations and closes.** Capture
 and the account connection remain open. Existing broker orders remain untouched.
 Resume does not replay missed actions. Check Orders before resuming if source and
 destination could have diverged. Route changes are blocked while copied trades remain
