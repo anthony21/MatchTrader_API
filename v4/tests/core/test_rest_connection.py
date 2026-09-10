@@ -1,5 +1,6 @@
 import base64
 import json
+import ssl
 
 import httpx
 import pytest
@@ -11,8 +12,24 @@ from matchtrader.core.errors import (
     UnknownOutcomeError,
     WritesDisabledError,
 )
+from matchtrader.core.rest_connection import RestConnection
 
 BALANCE = {"balance": "10.01", "equity": "9.99", "currency": "USD"}
+
+
+@pytest.mark.parametrize(
+    "minimum,expected", [("TLSv1.2", ssl.TLSVersion.TLSv1_2), ("TLSv1.3", ssl.TLSVersion.TLSv1_3)]
+)
+def test_tls_policy_keeps_certificate_and_hostname_verification(settings, minimum, expected):
+    connection = RestConnection.acquire(settings.model_copy(update={"tls_minimum_version": minimum}))
+    try:
+        context = connection._client._transport._pool._ssl_context
+        assert context.minimum_version == expected
+        assert context.verify_mode == ssl.CERT_REQUIRED
+        assert context.check_hostname is True
+        assert context.cert_store_stats()["x509_ca"] > 0
+    finally:
+        connection.release()
 
 
 @pytest.mark.parametrize("status", [200, 204])
@@ -382,3 +399,28 @@ def test_failed_login_renewals_share_four_attempt_budget(api_factory, settings):
     with pytest.raises(AuthenticationError, match="four attempts"):
         api.balance()
     assert len(seen) == 5
+
+
+def test_trace_is_installed_only_for_active_capture_writes(api_factory):
+    from time import perf_counter_ns
+    from types import SimpleNamespace
+
+    from matchtrader.capture.dispatch_metrics import DispatchMetrics
+
+    def handler(request):
+        if request.url.path.endswith('/pending-order/create'):
+            callback = request.extensions['trace']
+            callback('http11.send_request_headers.started', {})
+            callback('http11.send_request_body.complete', {})
+            return httpx.Response(200, json={'orderId': 'trace-test'})
+
+    api, _ = api_factory(handler)
+    metrics = DispatchMetrics()
+    event = SimpleNamespace(event_id='e1', action='CREATE')
+    def write():
+        api.create_pending_order(instrument='EURUSD', orderSide='BUY', volume='.01', type='LIMIT', price='1.1')
+        return {'status': 'accepted', 'duplicate': False}
+    metrics.run(event, perf_counter_ns(), perf_counter_ns(), write)
+    latest = metrics.snapshot()['latest']
+    assert latest['dispatch_ms'] is not None
+    assert latest['stages_ms']['write_started'] >= latest['stages_ms']['write_rate_permit']

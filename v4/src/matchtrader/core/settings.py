@@ -21,6 +21,7 @@ class Settings(BaseModel):
     system_uuid: str = ""
     cookie_mode: Literal["session", "account"] = "session"
     session_renewal: Literal["refresh", "login"] = "refresh"
+    tls_minimum_version: Literal["TLSv1.2", "TLSv1.3"] = "TLSv1.3"
     timeout_seconds: float = Field(default=20, gt=0, le=300)
     requests_per_minute: int = Field(default=450, ge=1, le=500)
     enable_writes: bool = False

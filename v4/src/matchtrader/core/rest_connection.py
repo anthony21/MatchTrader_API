@@ -3,6 +3,7 @@
 import base64
 import binascii
 import json
+import ssl
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -26,7 +27,12 @@ class RestConnection(BaseConnection):
     def __init__(self, settings, *, _key=None, transport=None):
         super().__init__(settings, _key=_key)
         self._lock = RLock()
+        verify = True
+        if settings.tls_minimum_version == "TLSv1.3":
+            verify = httpx.create_ssl_context(trust_env=False)
+            verify.minimum_version = ssl.TLSVersion.TLSv1_3
         self._client = httpx.Client(
+            verify=verify,
             timeout=settings.timeout_seconds,
             transport=transport,
             follow_redirects=False,
@@ -69,7 +75,11 @@ class RestConnection(BaseConnection):
 
     def _send(self, method, path, *, scope="manager", body=None, params=None, write=False):
         self.ensure_open()
+        from ..capture.dispatch_metrics import active, mark, trace
+
+        mark('write_rate_wait_start' if write else 'preflight_rate_wait_start')
         self._limiter.wait()
+        mark('write_rate_permit' if write else 'preflight_rate_permit')
         base = self.settings.platform_url
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if scope == "trading":
@@ -83,7 +93,8 @@ class RestConnection(BaseConnection):
             path = path.replace("SYSTEM_UUID", self._system)
         try:
             response = self._client.request(
-                method, base + "/" + path.lstrip("/"), json=body, params=params, headers=headers
+                method, base + "/" + path.lstrip("/"), json=body, params=params, headers=headers,
+                **({"extensions": {"trace": trace}} if write and active() else {})
             )
         except httpx.TransportError:
             if write:
@@ -91,6 +102,8 @@ class RestConnection(BaseConnection):
                     "Mutation transport failure: outcome unknown; reconcile before retry"
                 ) from None
             raise APIError("Request transport failure") from None
+        if write:
+            mark("response_complete")
         if response.status_code == 401:
             raise AuthenticationError("Authentication expired or rejected (401)")
         if response.is_error or response.is_redirect:

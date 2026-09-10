@@ -35,3 +35,13 @@ def test_bad_ws_headers_and_limits():
         Settings(platform_url="https://broker.example", requests_per_minute=501)
     with pytest.raises(ValidationError):
         Settings(platform_url="https://broker.example", system_uuid="../../other")
+
+
+def test_tls_minimum_from_env_and_invalid_versions(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("MTR_PLATFORM_URL=https://broker.example\nMTR_TLS_MINIMUM_VERSION=TLSv1.3\n")
+    assert Settings.from_env(env).tls_minimum_version == "TLSv1.3"
+    assert Settings(platform_url="https://broker.example").tls_minimum_version == "TLSv1.3"
+    for value in ("TLSv1.1", "false", "auto"):
+        with pytest.raises(ValidationError):
+            Settings(platform_url="https://broker.example", tls_minimum_version=value)
