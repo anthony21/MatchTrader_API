@@ -1,0 +1,18 @@
+From this v4 folder, install with Poetry 2.2 or later (2.x):
+
+    poetry install --with test
+    npm.cmd --prefix frontend ci
+    npm.cmd --prefix frontend run build
+
+Create .env from .env.example only if .env does not already exist, then edit
+credentials locally. Never overwrite an existing .env with the example.
+
+Start the API and dashboard from v4:
+
+    .\.venv\Scripts\python.exe -m matchtrader.dashboard.cli
+
+Open http://127.0.0.1:8765 and click Connect account. Keep the terminal open.
+
+Quantower needs its own sender setup; see docs/QUANTOWER_SENDER_HANDOFF.md.
+The receiver listens locally and API trading starts disabled.
+Release summaries: docs/CHANGELOG.md.

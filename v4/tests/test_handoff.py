@@ -20,6 +20,9 @@ def test_archive_excludes_local_credentials_and_reports(tmp_path):
         ".env.txt": "SECRET",
         "private.env": "SECRET",
         ".env.example": "MTR_PASSWORD=",
+        "pyproject.toml": "[project]\nname = 'hcamm-matchtrader'\n",
+        "poetry.lock": "# Locked dependencies\n",
+        "poetry.toml": "[virtualenvs]\nin-project = true\n",
         "src/matchtrader/api.py": "pass\n",
         "src/matchtrader/.env.json": "SECRET",
         "data/trades.csv": "PRIVATE",
@@ -29,6 +32,7 @@ def test_archive_excludes_local_credentials_and_reports(tmp_path):
         "screenshots/private.png": "PRIVATE",
         "frontend/src/App.vue": "<template>Dashboard</template>",
         "frontend/package-lock.json": "{}",
+        "frontend/src/react/Activity.jsx": "export default function Activity() {}",
         "frontend/dist/assets/bundle.js": "PRIVATE BUILD",
         "frontend/node_modules/dependency/index.js": "DEPENDENCY",
         "frontend/.env.local": "SECRET",
@@ -41,11 +45,15 @@ def test_archive_excludes_local_credentials_and_reports(tmp_path):
     manifest = load_builder().build(tmp_path, output)
     assert {row["path"] for row in manifest} == {
         ".env.example",
+        "pyproject.toml",
+        "poetry.lock",
+        "poetry.toml",
         "src/matchtrader/api.py",
         "docs/guide.md",
         ".agents/skills/client/SKILL.md",
         "frontend/src/App.vue",
         "frontend/package-lock.json",
+        "frontend/src/react/Activity.jsx",
     }
     with ZipFile(output) as archive:
         assert all(name.startswith("matchtrader-python/v4/") for name in archive.namelist())

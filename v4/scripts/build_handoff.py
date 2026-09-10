@@ -16,12 +16,12 @@ ROOT_FILES = {
     ".dockerignore",
     "Dockerfile",
     "compose.yaml",
-    "requirements.lock",
-    "requirements-test.lock",
+    "poetry.lock",
+    "poetry.toml",
 }
 ARCHIVE_ROOT = "matchtrader-python/v4"
 TREES = {"src", "tests", "scripts", "docs", ".agents", "frontend", "quantower"}
-SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".js", ".vue", ".css", ".html", ".cs", ".csproj"}
+SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".js", ".jsx", ".vue", ".css", ".html", ".cs", ".csproj"}
 EXCLUDED = {
     "__pycache__",
     ".pytest_cache",
