@@ -35,6 +35,7 @@ class FakeAPI:
                 type="LIMIT",
                 volume="0.02",
                 activationPrice="2400",
+                creationTimeIso="2026-09-10T01:37:03.439Z",
                 unexpectedSecret="never-expose",
             )
         ]
@@ -50,6 +51,8 @@ class FakeAPI:
                 volume=".01",
                 openPrice="1.15",
                 profit="-1.5",
+                netProfit="0",
+                openTimeMillis=1789000000000,
                 privateField="do-not-expose",
             )
         ]
@@ -64,9 +67,13 @@ def test_connect_discovers_accounts_and_stop_closes_owner(settings, tmp_path):
         api = controller.api
         status = controller.refresh_orders()
         assert status["orders"][0]["id"] == "broker-test"
+        assert status["orders"][0]["creationTimeIso"] == "2026-09-10T01:37:03.439Z"
         assert "never-expose" not in json.dumps(status)
         status = controller.refresh_positions()
         assert status["positions"][0]["id"] == "p1" and status["positions_at"]
+        assert status["positions"][0]["profit"] == "-1.5"
+        assert status["positions"][0]["netProfit"] == "0"
+        assert status["positions"][0]["openTimeMillis"] == 1789000000000
         assert "do-not-expose" not in json.dumps(status)
         with pytest.raises(ValueError):
             controller.set_copying(True)
@@ -92,6 +99,21 @@ def test_connection_error_does_not_expose_upstream_body(settings, tmp_path):
         controller.close()
 
 
+def test_position_only_broker_acceptance_counts_for_selected_account(settings, tmp_path):
+    controller = DashboardController(settings, tmp_path, api_factory=FakeAPI)
+    try:
+        with controller.native_store.db:
+            controller.native_store.db.execute(
+                "INSERT INTO trades(trade_id,source_key,destination,broker_position_id) VALUES(?,?,?,?)",
+                ('trade', 'source-key', '123', 'position-only'),
+            )
+        assert controller.status()['broker_orders_sent'] == 1
+        controller.selected = '456'
+        assert controller.status()['broker_orders_sent'] == 0
+    finally:
+        controller.close()
+
+
 def test_start_stop_and_account_switch_isolate_journals(settings, tmp_path):
     controller = DashboardController(settings, tmp_path, accounts=["456"])
     try:
@@ -104,7 +126,12 @@ def test_start_stop_and_account_switch_isolate_journals(settings, tmp_path):
             1,
             {"record": {"kind": "touched", "symbol": "XAUUSD"}, "reason": "no volume"},
         )
-        assert controller.feed()["events"][0]["status"] == "observation"
+        observed = controller.feed()["events"][0]
+        assert observed["status"] == "observation"
+        assert observed["meaning"]["source"]["code"] == "R01"
+        assert observed["meaning"]["opened"]["state"] == "unconfirmed"
+        assert observed["account_id"] == ""  # CSV does not establish source account.
+        assert observed["quantity"] is None
         with pytest.raises(ValueError, match="Stop"):
             controller.start("456")
         controller.stop()
@@ -198,5 +225,18 @@ def test_failed_manual_refresh_preserves_expiry_and_reports_sanitized_error(sett
         assert after["token_expires_at"] == before["token_expires_at"]
         assert "failed" in after["token_message"]
         assert "secret-response" not in json.dumps(after)
+    finally:
+        controller.close()
+
+
+def test_capture_generation_rejects_queued_previous_session(settings, tmp_path):
+    controller = DashboardController(settings, tmp_path)
+    try:
+        controller.start('123')
+        generation = controller.capture_generation
+        controller.stop()
+        controller.start('123')
+        with pytest.raises(ValueError, match='Capture is stopped'):
+            controller.receive_native({}, capture_generation=generation)
     finally:
         controller.close()

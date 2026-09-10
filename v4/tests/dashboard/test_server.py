@@ -65,6 +65,15 @@ def test_session_and_assets_same_origin_only(server):
     assert call(server, "/../data/private.db")[0] == 404
 
 
+def test_mapping_endpoint_is_authenticated_and_account_scoped(server):
+    assert call(server, '/api/trade-mappings')[0] == 401
+    status, body = call(server, '/api/trade-mappings', headers={'X-Session-Token': 'test-session'})
+    assert status == 200
+    assert json.loads(body) == {'account_id': '123', 'mappings': []}
+    _, raw = call(server, '/api/status', headers={'X-Session-Token': 'test-session'})
+    assert json.loads(raw)['version'] == '0.6.0'
+
+
 def test_api_requires_session_and_can_start_stop(server):
     headers = {"X-Session-Token": "test-session"}
     assert call(server, "/api/status")[0] == 401
@@ -114,3 +123,62 @@ def test_token_refresh_requires_session_and_routes_to_relogin(server):
     status, body = call(server, "/api/token/refresh", "POST", {}, {"X-Session-Token": "test-session"})
     assert status == 200 and json.loads(body)["token_expires_at"] == "new-expiry"
     assert calls == [True]
+
+
+def test_event_meanings_catalog_requires_authentication(server):
+    assert call(server, '/api/event-meanings')[0] == 401
+    status, raw = call(server, '/api/event-meanings', headers={'X-Session-Token': 'test-session'})
+    assert status == 200
+    result = json.loads(raw)
+    assert result['version'] == '1.0.0'
+    assert result['sources']['R01'] == 'R01 strategy'
+    assert {'POSITION', 'FILL', 'LEDGER'} <= {item['code'] for item in result['events']}
+
+
+def test_native_stream_is_authenticated_and_delivers_committed_changes(settings, tmp_path):
+    from datetime import UTC, datetime
+    from http.client import HTTPConnection
+    from socket import AF_INET, SOCK_STREAM, socket
+    from threading import Thread
+
+    from matchtrader.capture.event import CaptureEvent
+
+    controller = DashboardController(settings, tmp_path / 'stream-data')
+    actual = DashboardHTTPServer(('127.0.0.1', 0), controller, tmp_path, '')
+    worker = Thread(target=actual.serve_forever, daemon=True)
+    worker.start()
+    client = HTTPConnection('127.0.0.1', actual.server_port, timeout=3)
+
+    def loopback_only(address, timeout, source_address):
+        assert address == ('127.0.0.1', actual.server_port)
+        connection = socket(AF_INET, SOCK_STREAM)
+        connection.settimeout(timeout)
+        assert connection.connect_ex(address) == 0
+        return connection
+
+    client._create_connection = loopback_only
+    try:
+        client.request('GET', '/api/capture/stream')
+        assert client.getresponse().status == 401
+        client.close()
+        client.request('GET', '/api/capture/stream', headers={'X-Session-Token': actual.session_token,
+                                                           'Origin': 'https://attacker.example'})
+        assert client.getresponse().status == 403
+        client.close()
+        client.request('GET', '/api/capture/stream', headers={'X-Session-Token': actual.session_token})
+        response = client.getresponse()
+        assert response.status == 200 and response.getheader('Content-Type').startswith('text/event-stream')
+        assert json.loads(response.readline().decode().removeprefix('data: '))['events'] == []
+        assert response.readline() == b'\n'
+        controller.native_store.record(CaptureEvent(event_id='stream-1', machine='test', connection_id='test',
+            account_id='source', emitted_at=datetime.now(UTC), kind='POSITION', symbol='EURUSD'))
+        pushed = json.loads(response.readline().decode().removeprefix('data: '))
+        assert pushed['events'][0]['event_id'] == 'stream-1'
+        assert pushed['events'][0]['meaning']['event']['code'] == 'POSITION'
+        response.close()
+    finally:
+        client.close()
+        actual.shutdown()
+        actual.server_close()
+        worker.join(timeout=3)
+        controller.close()

@@ -10,11 +10,13 @@ from time import monotonic
 from ..api import MatchTraderAPI
 from ..bridge.api import ShadowBridge
 from ..bridge.ledger import LedgerTail
+from ..capture.meaning import meaning
 from ..capture.reconcile import reconcile
 from ..capture.router import CaptureRouter
 from ..capture.store import CaptureStore
 from ..core.errors import APIError
 from ..core.settings import Settings
+from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_settings import CopySettings, load_settings, save_settings
 
 
@@ -50,13 +52,15 @@ class DashboardController:
         self.connection_message = "Connect to verify this account and discover your other accounts."
         self.capture_message = "Stopped. Starting captures new events only."
         self.running = False
+        self.capture_generation = 0
+        self.capture_websocket = None
         self.api = None
         self.bridge = None
         self.orders = []
         self.orders_at = None
         self.positions = []
         self.positions_at = None
-        self.native_store = CaptureStore(data_dir / "quantower", csv_limit)
+        self.native_store = CaptureStore(data_dir / "quantower", csv_limit, broker=settings.platform_url, background_exports=True)
         self.native = CaptureRouter(self.native_store, route)
         self.token_message = ""
         self.reconciliation_message = ""
@@ -153,6 +157,7 @@ class DashboardController:
                     "profit",
                     "netProfit",
                     "openTime",
+                    "openTimeMillis",
                 }
                 self.positions = [p.model_dump(mode="json", include=fields) for p in positions]
                 self.positions_at = datetime.now(UTC).isoformat()
@@ -222,9 +227,9 @@ class DashboardController:
             self.native_store.export()
             return self.copy_settings()
 
-    def receive_native(self, payload):
+    def receive_native(self, payload, *, capture_generation=None):
         with self.lock:
-            if not self.running:
+            if not self.running or (capture_generation is not None and capture_generation != self.capture_generation):
                 raise ValueError("Capture is stopped")
             return self.native.receive(payload, self.api, self.selected)
 
@@ -272,6 +277,7 @@ class DashboardController:
                     "stopLoss",
                     "takeProfit",
                     "creationTime",
+                    "creationTimeIso",
                 }
                 self.orders = [order.model_dump(mode="json", include=fields) for order in orders]
                 self.orders_at = datetime.now(UTC).isoformat()
@@ -291,6 +297,7 @@ class DashboardController:
             self._select(account_id)
             tail = LedgerTail(self.ledger_path) if self.ledger_path else None
             self.halt.clear()
+            self.capture_generation += 1
             self.running = True
             self.capture_message = (
                 "Native event receiver enabled; also observing new R01 CSV rows."
@@ -357,6 +364,8 @@ class DashboardController:
                 return self.status()
 
     def close(self):
+        if self.capture_websocket:
+            self.capture_websocket.close()
         self.stop()
         self.bridge.journal.close()
         self.native_store.close()
@@ -371,6 +380,10 @@ class DashboardController:
         with self.lock:
             return {
                 "mode": "copying" if self.native.armed else "capture",
+                "version": VERSION,
+                "capture_websocket": self.capture_websocket.status() if self.capture_websocket else {"listening": False},
+                "event_schema_version": EVENT_SCHEMA_VERSION,
+                "mapping_schema_version": MAPPING_SCHEMA_VERSION,
                 "running": self.running,
                 "account_id": self.selected,
                 "accounts": list(self.accounts),
@@ -387,7 +400,8 @@ class DashboardController:
                 "csv_export_error": self.native_store.export_error,
                 "reconciliation_message": self.reconciliation_message,
                 "broker_orders_sent": self.native_store.db.execute(
-                    "SELECT count(*) FROM trades WHERE destination=? AND broker_order_id!=''",
+                    "SELECT count(*) FROM trades WHERE destination=? "
+                    "AND (broker_order_id!='' OR broker_position_id!='')",
                     (self.selected,),
                 ).fetchone()[0],
                 "token_expires_at": self.api.connection.session_expires_at if self.api else None,
@@ -426,6 +440,11 @@ class DashboardController:
                         "broker_order_id": None,
                         "order_type": event["order_type"],
                         "source_order_id": event["source_order_id"],
+                        "account_id": event["account_id"],
+                        "machine": event["source_machine"],
+                        "connection_id": "legacy",
+                        "kind": "LEGACY",
+                        "source": "UNKNOWN",
                     }
                 )
             for identity, received, raw in observations:
@@ -448,7 +467,17 @@ class DashboardController:
                         "broker_order_id": None,
                         "order_type": None,
                         "source_order_id": event.get("label"),
+                        "account_id": "",
+                        "machine": "ledger",
+                        "connection_id": "R01 CSV",
+                        "kind": "LEDGER",
+                        "source": "R01",
                     }
                 )
             rows.sort(key=lambda row: row["received_at"], reverse=True)
+            for row in rows:
+                row['quantity'] = row['volume']
+                row['quantity_unit'] = 'lots' if row['kind'] == 'LEGACY' else 'UNKNOWN'
+                row['order_id'] = row['source_order_id']
+                row['meaning'] = meaning({**row, 'decision': row['status']})
             return {"account_id": self.selected, "events": rows[:200]}

@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from ..capture.route import RouteConfig
+from ..capture.ws_ingress import CaptureWebSocketServer
 from ..core.settings import Settings
 from .controller import DashboardController
 from .server import DashboardHTTPServer
@@ -15,6 +16,7 @@ from .server import DashboardHTTPServer
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env", type=Path, default=Path(".env"))
+    parser.add_argument("--ws-port", type=int, help="Native WebSocket port; 0 disables (default 8767)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--assets", type=Path, default=Path("frontend/dist"))
     parser.add_argument("--data", type=Path, default=Path("data/dashboard"))
@@ -32,6 +34,14 @@ def main(argv=None):
         parser.error(
             "MTR_BRIDGE_TOKEN must be a random secret with at least 32 non-whitespace ASCII characters"
         )
+    try:
+        ws_port = args.ws_port if args.ws_port is not None else int(env.get('MTR_CAPTURE_WS_PORT', '8767') or '8767')
+        if not 0 <= ws_port <= 65535:
+            raise ValueError()
+    except ValueError:
+        parser.error('MTR_CAPTURE_WS_PORT / --ws-port must be 0 through 65535')
+    if ws_port and not token and args.ws_port is not None:
+        parser.error('WebSocket capture requires MTR_BRIDGE_TOKEN')
     ledger = env.get("MTR_R01_LEDGER")
     accounts = [x.strip() for x in (env.get("MTR_ACCOUNT_IDS", "") or "").split(",") if x.strip()]
     controller = DashboardController(
@@ -44,6 +54,9 @@ def main(argv=None):
         interactive_copying=True,
     )
     try:
+        if ws_port and token:
+            controller.capture_websocket = CaptureWebSocketServer(controller, token, ws_port)
+            controller.capture_websocket.start()
         with DashboardHTTPServer(
             ("0.0.0.0" if args.container else "127.0.0.1", args.port), controller, args.assets, token
         ) as server:

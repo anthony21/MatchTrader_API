@@ -4,11 +4,14 @@ import hmac
 import json
 import mimetypes
 import secrets
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import BoundedSemaphore, Event
 from urllib.parse import unquote, urlsplit
 
 from ..bridge.server import MAX_BODY, ingest
+from ..capture.meaning import catalog
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
@@ -19,7 +22,14 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.assets = assets.resolve()
         self.bridge_token = bridge_token
         self.session_token = secrets.token_urlsafe(32)
+        self.stream_slots = BoundedSemaphore(8)
+        self.stream_stop = Event()
         super().__init__(address, Handler, bind_and_activate=bind_and_activate)
+
+    def server_close(self):
+        self.stream_stop.set()
+        self.controller.native_store.notify_stream()
+        super().server_close()
 
     def trusted(self, headers):
         host = headers.get("Host", "")
@@ -70,14 +80,23 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             if not self.server.authorized(self.headers):
                 return self.reply(401, {"error": "Reload the dashboard to start a new local session"})
+            if path == "/api/capture/stream":
+                return self.stream_native()
             if path == "/api/copy-settings":
                 return self.reply(200, self.server.controller.copy_settings())
+            if path == "/api/event-meanings":
+                return self.reply(200, catalog())
             if path == "/api/status":
                 return self.reply(200, self.server.controller.status())
             if path == "/api/events":
                 return self.reply(200, self.server.controller.feed())
             if path == "/api/capture/events":
                 return self.reply(200, {"events": self.server.controller.native_store.feed()})
+            if path == "/api/trade-mappings":
+                controller = self.server.controller
+                with controller.lock:
+                    return self.reply(200, {"account_id": controller.selected,
+                                           "mappings": controller.native_store.mapping_view(controller.selected)})
             return self.reply(404, {"error": "Unknown endpoint"})
         relative = "index.html" if path == "/" else unquote(path).lstrip("/")
         target = (self.server.assets / relative).resolve()
@@ -86,6 +105,33 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(
             200, target.read_bytes(), mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         )
+
+    def stream_native(self):
+        if not self.server.stream_slots.acquire(blocking=False):
+            return self.reply(503, {"error": "Too many open event streams"})
+        self.close_connection = True
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            revision = -1
+            while not self.server.stream_stop.is_set():
+                snapshot = self.server.controller.native_store.stream_snapshot(revision)
+                if snapshot is None or self.server.stream_stop.is_set():
+                    break
+                revision = snapshot["revision"]
+                data = ("data: " + json.dumps(snapshot) + "\n\n").encode() if "events" in snapshot else b": heartbeat\n\n"
+                self.wfile.write(data)
+                self.wfile.flush()
+        except (OSError, TimeoutError):
+            pass  # Disconnected/slow readers never block capture or routing.
+        finally:
+            self.server.stream_slots.release()
 
     def do_POST(self):
         if not self.server.trusted(self.headers):
