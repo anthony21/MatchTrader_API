@@ -5,6 +5,7 @@ import pytest
 
 from matchtrader.capture import CaptureStore
 from matchtrader.capture.router import CaptureRouter
+from matchtrader.models.operation import Operation
 from matchtrader.models.position import Position
 
 
@@ -134,4 +135,92 @@ def test_market_fill_links_source_position_and_close(tmp_path, route, event, bro
     assert router.receive(close.model_dump(), broker, "demo")["status"] == "accepted"
     assert broker.calls[-1][1]["positionId"] == "position1"
     assert router.store.trade(result["trade_id"])["state"] == "resolved"
+    router.store.close()
+
+
+def test_position_only_response_does_not_invent_order_id(tmp_path, route, event, broker):
+    router = configured(tmp_path, route)
+    broker.open_position = lambda **kwargs: Operation(positionId='only-position')
+    market = event.model_copy(update={'order_type': 'MARKET'})
+    result = router.receive(market.model_dump(), broker, 'demo')
+    assert result['status'] == 'accepted'
+    assert result['broker_order_id'] == ''
+    assert result['broker_position_id'] == 'only-position'
+    assert router.receive(market.model_copy(update={'event_id': 'duplicate-create'}).model_dump(),
+                          broker, 'demo')['status'] == 'held'
+    router.store.close()
+
+
+def test_partial_close_audit_and_cancel_does_not_resolve_filled_position(tmp_path, route, event, broker):
+    router = configured(tmp_path, route)
+    created = event.model_copy(update={'quantity': Decimal('2')})
+    identity = router.receive(created.model_dump(), broker, 'demo')['trade_id']
+    broker.positions = [Position(id='filled', symbol='EURUSD', side='BUY', volume='.02',
+                                 openPrice='1.15', orderId='aqua1')]
+    close = created.model_copy(update={'event_id': 'partial', 'request_id': 'partial',
+                                       'action': 'CLOSE', 'quantity': Decimal('1')})
+    assert router.receive(close.model_dump(), broker, 'demo')['status'] == 'accepted'
+    assert broker.calls[-1][0] == 'PARTIAL'
+    assert broker.calls[-1][1]['positionId'] == 'filled'
+    cancel = created.model_copy(update={'event_id': 'cancel', 'request_id': 'cancel', 'action': 'CANCEL'})
+    assert router.receive(cancel.model_dump(), broker, 'demo')['status'] == 'accepted'
+    assert router.store.trade(identity)['state'] == 'open'
+    actions = router.store.mapping_view('demo')[0]['actions']
+    assert len(actions) == 3
+    partial = next(a for a in actions if a['action'] == 'CLOSE')
+    assert partial['request']['positionId'] == 'filled'
+    assert partial['request']['volume'] == '0.01'
+    assert partial['outcome'] == 'accepted'
+    router.store.close()
+
+
+def test_source_split_holds_close_without_allocating_by_guess(tmp_path, route, event, broker):
+    router = configured(tmp_path, route)
+    market = event.model_copy(update={'order_type': 'MARKET'})
+    router.receive(market.model_dump(), broker, 'demo')
+    for index in (1, 2):
+        router.receive(market.model_copy(update={'event_id': f'fill{index}', 'kind': 'FILL',
+                        'position_id': f'qt{index}', 'execution_id': f'ex{index}'}).model_dump(), broker, 'demo')
+    broker.positions = [Position(id='position1', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15')]
+    result = router.receive(market.model_copy(update={'event_id': 'close', 'request_id': 'close',
+                            'action': 'CLOSE'}).model_dump(), broker, 'demo')
+    assert result['status'] == 'held' and 'Split' in result['reason']
+    assert len(broker.calls) == 1
+    router.store.close()
+
+
+def test_destination_merge_blocks_full_close_of_one_trade(tmp_path, route, event, broker):
+    router = configured(tmp_path, route)
+    counter = []
+    def create(**kwargs):
+        counter.append(kwargs)
+        return Operation(orderId=f'broker{len(counter)}', positionId='merged')
+    broker.open_position = create
+    market = event.model_copy(update={'order_type': 'MARKET'})
+    router.receive(market.model_dump(), broker, 'demo')
+    router.receive(market.model_copy(update={'event_id': 'create2', 'order_id': 'qt2'}).model_dump(), broker, 'demo')
+    broker.positions = [Position(id='merged', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15')]
+    result = router.receive(market.model_copy(update={'event_id': 'close', 'request_id': 'close',
+                            'action': 'CLOSE'}).model_dump(), broker, 'demo')
+    assert result['status'] == 'held' and 'Merged' in result['reason']
+    assert not broker.calls
+    router.store.close()
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_replay_recovers_missing_terminal_decision_without_dispatch(tmp_path, route, event, broker, completed):
+    router = configured(tmp_path, route)
+    if completed:
+        result = router.receive(event.model_dump(), broker, 'demo')
+        assert result['status'] == 'accepted'
+        # Simulate a crash after attempt completion but before the event decision commit.
+        with router.store.lock, router.store.db:
+            router.store.db.execute("UPDATE events SET decision='captured',reason=''")
+    else:
+        router.store.record(event)  # Crash before any dispatch intent was claimed.
+    count = len(broker.calls)
+    replay = router.receive(event.model_dump(), broker, 'demo')
+    assert replay['duplicate'] and len(broker.calls) == count
+    assert replay['status'] == ('accepted' if completed else 'held')
+    assert router.store.feed()[0]['decision'] == replay['status']
     router.store.close()

@@ -24,10 +24,11 @@ def reconcile(store, api, destination, positions):
         candidates = [
             p
             for p in positions
-            if p.id == trade["broker_position_id"]
-            or (getattr(p, "orderId", None) == trade["broker_order_id"])
+            if (trade["broker_position_id"] and p.id == trade["broker_position_id"])
+            or (trade["broker_order_id"] and getattr(p, "orderId", None) == trade["broker_order_id"])
         ]
         candidates = [p for p in candidates if p.symbol == trade["symbol"] and p.side == trade["side"]]
+        store.observe_positions(trade['trade_id'], destination, candidates)
         if len(candidates) == 1:
             values = {"broker_position_id": candidates[0].id}
             # A visible position cannot tell us whether an uncertain edit succeeded.
@@ -41,6 +42,11 @@ def reconcile(store, api, destination, positions):
     now = datetime.now(UTC)
     history = api.closed_positions(**{"from": now - timedelta(days=7), "to": now})
     for trade in missing:
+        try:
+            with store.lock:
+                store.mappings.guard_position(trade['trade_id'])
+        except ValueError:
+            continue  # Aggregate history does not allocate a merged or split trade.
         matches = [
             p
             for p in history

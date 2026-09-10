@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from threading import RLock
 
+from ..version import EVENT_SCHEMA_VERSION
+from .dispatch_metrics import mark
 from .event import CaptureEvent
 
 
@@ -20,11 +22,31 @@ class CaptureRouter:
         event = CaptureEvent.model_validate(payload)
         with self.lock:
             row, duplicate = self.store.record(event)
+            mark("event_commit")
             if duplicate:
+                trade = self.store.trade(row['trade_id']) if row['trade_id'] else None
+                uncertain = trade and trade['state'] in {'uncertain', 'dispatching'}
+                # A crash can occur after a durable event/attempt but before its
+                # terminal event decision. Recover evidence; never repeat the write.
+                if row['decision'] == 'captured' and event.kind == 'ACCEPTED' and event.action != 'OBSERVE':
+                    action_key = 'CREATE' if event.action == 'CREATE' else event.action + ':' + event.request_id
+                    with self.store.lock:
+                        attempt = self.store.db.execute(
+                            'SELECT state FROM attempts WHERE trade_id=? AND action_key=?',
+                            (row['trade_id'], action_key),
+                        ).fetchone()
+                    prior = attempt['state'] if attempt else None
+                    row['decision'] = 'uncertain' if uncertain or prior in {'dispatching', 'uncertain'} else 'accepted' if prior == 'accepted' else 'held'
+                    row['reason'] = 'Recovered prior attempt; no replay' if prior else 'Prior event processing incomplete; no automatic replay'
+                    self.store.decision(row['seq'], row['decision'], row['reason'])
                 return {
+                    "schema_version": EVENT_SCHEMA_VERSION,
                     "event_id": event.event_id,
                     "trade_id": row["trade_id"],
-                    "status": row["decision"],
+                    "status": "uncertain" if uncertain else row["decision"],
+                    "reason": "Prior dispatch needs reconciliation" if uncertain else row["reason"],
+                    "broker_order_id": trade["broker_order_id"] if trade else "",
+                    "broker_position_id": trade["broker_position_id"] if trade else "",
                     "duplicate": True,
                 }
             status, reason = "captured", "Native observation; no broker action"
@@ -38,11 +60,13 @@ class CaptureRouter:
             self.store.decision(row["seq"], status, reason)
             trade = self.store.trade(row["trade_id"]) if row["trade_id"] else None
             return {
+                "schema_version": EVENT_SCHEMA_VERSION,
                 "event_id": event.event_id,
                 "trade_id": row["trade_id"],
                 "status": status,
                 "reason": reason,
                 "broker_order_id": trade["broker_order_id"] if trade else "",
+                "broker_position_id": trade["broker_position_id"] if trade else "",
                 "duplicate": False,
             }
 
@@ -68,9 +92,9 @@ class CaptureRouter:
         if trade["destination"] and trade["destination"] != destination:
             raise ValueError("Trade already belongs to another destination")
         if event.action == "CREATE":
-            if trade["broker_order_id"]:
+            if trade["broker_order_id"] or trade["broker_position_id"]:
                 raise ValueError("Trade already has a destination order")
-        elif not trade["broker_order_id"]:
+        elif not trade["broker_order_id"] and not trade["broker_position_id"]:
             raise ValueError("No confirmed destination mapping for this source trade")
         if not event.brackets_absolute:
             raise ValueError("Offset brackets require an explicit absolute-price conversion")
@@ -102,8 +126,11 @@ class CaptureRouter:
             related = [
                 p
                 for p in positions
-                if p.id == position_id or (getattr(p, "orderId", None) == trade["broker_order_id"])
+                if (position_id and p.id == position_id)
+                or (trade["broker_order_id"] and getattr(p, "orderId", None) == trade["broker_order_id"])
             ]
+            related = [p for p in related if p.symbol == symbol and p.side == event.side]
+            self.store.observe_positions(identity, destination, related)
             if len(related) == 1:
                 position_id = related[0].id
                 self.store.update(identity, broker_position_id=position_id)
@@ -113,7 +140,7 @@ class CaptureRouter:
                     raise ValueError("Mapped pending order is absent; reconcile fill/cancel before acting")
                 method = api.cancel_pending_order
                 kwargs = {**common, "id": order_id, "type": pending[order_id].type}
-            elif event.action == "EDIT" and order_id in pending:
+            elif event.action == "EDIT" and order_id in pending and event.order_id:
                 method = api.edit_pending_order
                 kwargs = {
                     **common,
@@ -125,6 +152,8 @@ class CaptureRouter:
                     "tpPrice": event.tp,
                 }
             elif len(related) == 1:
+                with self.store.lock:
+                    self.store.mappings.guard_position(identity)
                 position = related[0]
                 if event.action == "CLOSE":
                     if lots > position.volume:
@@ -144,9 +173,10 @@ class CaptureRouter:
                     }
             else:
                 raise ValueError("No unambiguous open-position mapping; manual reconciliation required")
+        mark("preflight_end")
         # Request IDs survive sender retries; CREATE is unique for the entire lifecycle.
         action_key = "CREATE" if event.action == "CREATE" else event.action + ":" + event.request_id
-        if not self.store.claim(identity, action_key):
+        if not self.store.claim(identity, action_key, event=event, destination=destination, request=kwargs):
             raise ValueError("Action already attempted; it will not be sent again")
         self.store.update(
             identity,
@@ -159,6 +189,7 @@ class CaptureRouter:
             last_event_at=event.emitted_at.isoformat(),
         )
         try:
+            mark("attempt_commit")
             result = method(**kwargs)
             if result.status and result.status != "OK":
                 raise RuntimeError("Unrecognized broker status")
@@ -168,17 +199,21 @@ class CaptureRouter:
             if event.action == "CREATE":
                 if not result.orderId and not result.positionId:
                     raise RuntimeError("Broker identity missing after submission")
-                values["broker_order_id"] = result.orderId or result.positionId
+                values["broker_order_id"] = result.orderId or ""
                 if result.positionId:
                     values["broker_position_id"] = result.positionId
             elif event.action == "CANCEL":
                 # An explicit successful cancel response is broker confirmation.
-                values.update(state="resolved", resolved_at=datetime.now(UTC).isoformat())
+                # Cancelling a remaining pending quantity does not close its filled position.
+                if related or self.store.mappings.ids(identity, 'destination', 'position'):
+                    values['state'] = 'open'
+                else:
+                    values.update(state="resolved", resolved_at=datetime.now(UTC).isoformat())
             elif event.action == "CLOSE":
-                if lots == position.volume:
+                if lots == position.volume and order_id not in pending:
                     values.update(state="resolved", resolved_at=datetime.now(UTC).isoformat())
                 else:
-                    values["state"] = "open"
+                    values["state"] = "pending" if order_id in pending and lots == position.volume else "open"
             self.store.update(identity, **values)
             self.store.finish(identity, action_key, "accepted")
             return "accepted", "Broker accepted the mapped action"

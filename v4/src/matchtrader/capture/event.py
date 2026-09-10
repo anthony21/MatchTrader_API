@@ -1,6 +1,6 @@
 """Native source identities are separate from destination broker identities."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class CaptureEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, "1.0.0", "1.1.0"] = 1
     event_id: str = Field(min_length=1, max_length=200)
     machine: str = Field(min_length=1, max_length=100)
     connection_id: str = Field(min_length=1, max_length=200)
@@ -30,6 +30,12 @@ class CaptureEvent(BaseModel):
     side: Literal["BUY", "SELL", ""] = ""
     order_type: Literal["MARKET", "LIMIT", "STOP", "STOP_LIMIT", "UNKNOWN"] = "UNKNOWN"
     quantity: Decimal = Field(default=Decimal(0), ge=0)
+    quantity_unit: str = Field(default="native", min_length=1, max_length=40)
+    fill_effect: Literal["OPEN", "CLOSE", "UNKNOWN"] = "UNKNOWN"
+    order_quantity: Decimal | None = Field(default=None, ge=0)
+    cumulative_filled_quantity: Decimal | None = Field(default=None, ge=0)
+    remaining_quantity: Decimal | None = Field(default=None, ge=0)
+    position_quantity: Decimal | None = Field(default=None, ge=0)
     price: Decimal = Field(default=Decimal(0), ge=0)
     sl: Decimal = Field(default=Decimal(0), ge=0)
     tp: Decimal = Field(default=Decimal(0), ge=0)
@@ -40,7 +46,7 @@ class CaptureEvent(BaseModel):
     def timezone_required(cls, value):
         if value.tzinfo is None:
             raise ValueError("Timezone required")
-        return value
+        return value.astimezone(UTC)
 
     @property
     def scope(self):
