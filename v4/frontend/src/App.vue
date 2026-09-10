@@ -1,11 +1,10 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { request } from './api.js'
+import { followNativeEvents } from './stream.js'
 import AccountControls from './components/AccountControls.vue'
-import EventTable from './components/EventTable.vue'
-import BrokerOrders from './components/BrokerOrders.vue'
+import OrdersWorkspace from './components/OrdersWorkspace.vue'
 import TokenSession from './components/TokenSession.vue'
-import OpenPositions from './components/OpenPositions.vue'
 import NativeEvents from './components/NativeEvents.vue'
 import CopySettings from './components/CopySettings.vue'
 
@@ -13,19 +12,14 @@ const state = ref({ accounts: [], running: false, connection: 'disconnected', or
 const selected = ref('')
 const events = ref([])
 const nativeEvents = ref([])
+const mappings = ref([])
 const page = ref('bridge')
 let lastBrokerRefresh = 0
 const busy = ref(false)
 const activeAction = ref('')
 const error = ref('')
-const filter = ref('')
-let timer, disposed = false
-const visible = computed(() => events.value.filter(event =>
-  `${event.symbol} ${event.side} ${event.action} ${event.status} ${event.source_order_id}`
-    .toLowerCase().includes(filter.value.toLowerCase())))
-const observations = computed(() => events.value.filter(event => event.status === 'observation').length)
-const previews = computed(() => events.value.filter(event => event.status === 'preview').length)
-const held = computed(() => events.value.filter(event => event.status === 'held').length)
+let timer, disposed = false, stopStream
+const streamStatus = ref('connecting')
 
 async function refresh() {
   const current = await request('status')
@@ -33,7 +27,12 @@ async function refresh() {
   if (!selected.value || !current.accounts.some(account => account.id === selected.value)) selected.value = current.account_id
   const feed = await request('events')
   events.value = feed.account_id === current.account_id ? feed.events : []
-  nativeEvents.value = (await request('capture/events')).events ?? []
+  if (streamStatus.value !== 'live') {
+    const snapshot = await request('capture/events')
+    if (streamStatus.value !== 'live') nativeEvents.value = snapshot.events ?? []
+  }
+  const mappingFeed = await request('trade-mappings')
+  mappings.value = mappingFeed.account_id === current.account_id ? mappingFeed.mappings ?? [] : []
 }
 async function poll() {
   if (!busy.value) {
@@ -69,8 +68,11 @@ async function action(name) {
   } catch (err) { error.value = err.message }
   finally { busy.value = false; activeAction.value = '' }
 }
-onMounted(poll)
-onUnmounted(() => { disposed = true; clearTimeout(timer) })
+onMounted(() => {
+  stopStream = followNativeEvents(value => { nativeEvents.value = value }, value => { streamStatus.value = value })
+  poll()
+})
+onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(timer) })
 </script>
 
 <template>
@@ -86,13 +88,13 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
     <main>
       <header>
         <div><div class="eyebrow">QUANTOWER → MATCH-TRADER</div><h1>{{ page === 'settings' ? 'Copy settings' : page === 'orders' ? 'Orders & positions' : 'Trading bridge' }}</h1>
-          <p>Choose your account. Control the connection. Follow every incoming event.</p></div>
-        <div class="mode-pill"><span class="small-dot"></span>{{ state.copying ? 'Copying enabled' : 'Capture only' }}</div>
+          <p>{{ page === 'orders' ? 'Positions, pending orders and copy activity — organized by trade.' : 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
+        <div class="mode-pill"><span class="small-dot"></span>{{ state.copying ? 'API trading enabled' : 'API trading off' }}</div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
       <AccountControls :state="state" v-model:selected="selected" :busy="busy"
         @connect="action('connect')" @start="action('start')" @stop="action('stop')" />
-      <section class="status-grid" aria-label="Service status">
+      <section v-if="page !== 'orders'" class="status-grid" aria-label="Service status">
         <article class="card metric"><span class="metric-label">BRIDGE</span>
           <strong><span class="status-dot" :class="{ on: state.running }"></span>{{ state.running ? 'Observing' : 'Stopped' }}</strong>
           <p>{{ state.capture_message || 'Loading local service…' }}</p></article>
@@ -101,30 +103,16 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
         <article class="card metric"><span class="metric-label">ACCOUNT IN VIEW</span>
           <strong>{{ state.account_id || '—' }}</strong><p>Orders sent by this bridge: {{ state.broker_orders_sent ?? 0 }}</p></article>
       </section>
-      <TokenSession :state="state" :busy="busy" :refreshing="activeAction === 'token/refresh'"
+      <TokenSession v-if="page !== 'orders'" :state="state" :busy="busy" :refreshing="activeAction === 'token/refresh'"
         @refresh="action('token/refresh')" />
       <template v-if="page === 'bridge'">
-      <NativeEvents :events="nativeEvents" :state="state" :busy="busy" @toggle="toggleCopying" />
-      <section class="card feed-panel">
-        <div class="section-heading">
-          <div><h2>Incoming activity <span class="count">{{ events.length }}</span></h2>
-            <p>Latest 200 events for the account in view · refreshes every 1.5 seconds</p></div>
-          <input aria-label="Filter events" v-model="filter" placeholder="Filter instrument, event, status…" />
-        </div>
-        <div class="feed-legend"><span>{{ observations }} observations</span><span>{{ previews }} request previews</span>
-          <span>{{ held }} held</span><span class="legend-note">Preview and observation do not mean broker acceptance.</span></div>
-        <EventTable :events="visible" />
-      </section>
+      <NativeEvents :events="nativeEvents" :legacy-events="events" :stream-status="streamStatus" :state="state" :busy="busy" @toggle="toggleCopying" />
       </template>
       <CopySettings v-else-if="page === 'settings'" :state="state" @saved="refresh" />
       <template v-else>
-      <BrokerOrders :orders="state.orders" :updated-at="state.orders_at" :connected="state.connection === 'connected'"
-        :busy="busy" @refresh="action('orders/refresh')" />
-      <OpenPositions :positions="state.positions ?? []" :updated-at="state.positions_at" :connected="state.connection === 'connected'"
-        :busy="busy" @refresh="action('positions/refresh')" />
-      <p class="quiet">Broker snapshots refresh every 5 seconds while this page is open.</p>
+      <OrdersWorkspace :state="state" :mappings="mappings" :busy="busy" @refresh="refreshBroker" />
       </template>
-      <footer>Native event receipt and broker acceptance are separate stages. CSV observations are never copied.</footer>
+      <footer>Version {{ state.version || '—' }} · Native event receipt and broker acceptance are separate stages. CSV observations are never copied.</footer>
     </main>
   </div>
 </template>
