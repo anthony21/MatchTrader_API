@@ -2,7 +2,9 @@
 
 # Match-Trader Python client
 
-Current release: **0.8.2**. Start with the [complete setup guide](docs/SETUP.md). See [trade mappings and the C# event contract](docs/TRADE_MAPPING.md)
+Current release: **0.9.1**. Use **Choose broker login** to select a named .env profile,
+log in, then choose one of its returned trading accounts. See [broker login setup](docs/BROKER_PROFILES.md).
+Start with the [installation guide](docs/SETUP.md). See [trade mappings and the C# event contract](docs/TRADE_MAPPING.md)
 for separate source/broker IDs, partial fills, split/merged positions and schema versions.
 
 This is the **v4 application iteration**. Run all commands from this folder.

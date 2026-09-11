@@ -26,8 +26,9 @@ const streamStatus = ref('connecting')
 
 async function refresh() {
   const current = await request('status')
+  const accountChanged = current.account_id !== state.value.account_id
   state.value = current
-  if (!selected.value || !current.accounts.some(account => account.id === selected.value)) selected.value = current.account_id
+  if (accountChanged || !selected.value || !current.accounts.some(account => account.id === selected.value)) selected.value = current.account_id
   const feed = await request('events')
   events.value = feed.account_id === current.account_id ? feed.events : []
   if (streamStatus.value !== 'live') {
@@ -99,7 +100,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(timer) })
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
       <AccountControls v-if="page !== 'brokers'" :state="state" v-model:selected="selected" :busy="busy"
-        @connect="action('connect')" @start="action('start')" @stop="action('stop')" />
+        @connect="action('connect')" @start="action('start')" @stop="action('stop')" @choose-login="openPage('brokers')" />
       <section v-if="page !== 'orders' && page !== 'raw' && page !== 'brokers' && page !== 'logging'" class="status-grid" aria-label="Service status">
         <article class="card metric"><span class="metric-label">BRIDGE</span>
           <strong><span class="status-dot" :class="{ on: state.running }"></span>{{ state.running ? 'Observing' : 'Stopped' }}</strong>

@@ -1,4 +1,40 @@
-# Broker profiles (v4 0.8.0)
+# Broker profiles (v4 0.9.1)
+
+## Choose a login, then an account
+
+Click **Choose broker login** in the main controls, or open **Broker accounts**.
+Choose a platform name from **Platform** and click **Log in** beside it.
+The backend uses that profile's credentials to obtain the broker's
+account list. Choose one under **Available trading accounts**, then click
+**Use selected account** to authenticate its account session and load its card.
+
+`MTR_PLATFORM_NAME` and `GTR_PLATFORM_NAME` provide friendly display labels.
+Mixed-case names such as `MTR_Platform_name` and `GTR_platform_name` are supported.
+Only the friendly name is shown in the first dropdown. The prefix is used internally
+to select credentials. Restart after editing .env. Only the selected platform's
+status, account dropdown and account card are shown. The account dropdown sits
+below the platform/login row and appears after successful authentication.
+
+Account IDs may be blank for this two-step flow, including the primary account at
+startup. Discovery opens and closes a temporary login connection without adopting
+a trading account. The authenticated response is retained only in backend memory.
+Selection reuses it when its token expiry is in the future. Expired logins hide
+account choices and offer **Refresh login**, which performs a fresh password login.
+Expiry is checked again before account selection. Unknown expiry is explicitly
+labeled, and selection then performs a fresh account login. Broker failures
+invalidate the cached login and choices. JWT expiry is a freshness check, not a
+guarantee against broker revocation. Only IDs
+and demo markers reach the account list, never credentials or tokens. Session
+expiration is displayed when the broker supplies a readable expiry.
+
+Switching a profile closes its previous selected session, clears its snapshots
+and connects the newly selected account. Other profiles stay connected. MTR uses
+the primary workspace and requires capture stopped before switching. GTR and
+other profiles retain separate account cards and read sessions; selecting one
+does not change the primary copy destination. Disconnect clears discovered choices.
+
+The sections below also describe the original direct-connect controls, which
+still require a configured account ID.
 
 Run the dashboard from v4 as usual and open **Broker accounts**. It supports up to
 five concurrently connected broker accounts: the existing MTR profile and four

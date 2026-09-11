@@ -1,10 +1,11 @@
 <script setup>
 defineProps({ state: Object, selected: String, busy: Boolean })
-defineEmits(['update:selected', 'connect', 'start', 'stop'])
+defineEmits(['update:selected', 'connect', 'start', 'stop', 'choose-login'])
 </script>
 
 <template>
   <section class="controls card" aria-label="Account and bridge controls">
+    <button class="secondary" @click="$emit('choose-login')">Choose broker login</button>
     <div class="account-field">
       <label for="account">Trading account</label>
       <select id="account" :value="selected" :disabled="busy || state.running"

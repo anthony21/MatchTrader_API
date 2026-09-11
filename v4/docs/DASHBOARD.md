@@ -1,3 +1,21 @@
+# Closed trades
+
+Orders includes a Closed trades tab. Connect an account, choose inclusive local
+From/Through dates and click Load closed trades. Additional configured profiles
+are available after connecting them in Broker accounts. No history polling is used.
+
+The table shows volume, entry, stored SL/TP, actual exit, close reason and net P/L.
+View trade expands IDs, opening time and costs. Search and pagination affect the
+rows; the summary covers the full date interval. Wins use positive net profit,
+including breakevens in the denominator. Partial closes remain separate operations.
+Account/date changes discard old results and late responses. Queries allow up to
+93 days. Browser timezone daylight-saving rules determine UTC date boundaries.
+
+The session-authenticated POST /api/orders/closed requires a matching explicit
+account ID. FULL status is accepted only for the closed-positions read endpoint
+with an operations array; incomplete/unknown statuses remain errors. Broker
+outcomes are not labeled as source strategy outcomes.
+
 # v3 dashboard additions
 
 The **Orders** sidebar page shows pending orders and open positions, with five-second

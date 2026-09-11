@@ -314,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/broker-profiles/action':
                 if controller.broker_profiles is None:
                     raise ValueError('Broker profiles not configured')
-                controller.broker_profiles.action(payload.get('profile'), payload.get('action'))
+                controller.broker_profiles.action(payload.get('profile'), payload.get('action'), payload.get('account_id'))
                 result = controller.broker_profiles.snapshot()
             elif self.path == "/api/connect":
                 result = controller.connect(payload.get("account_id"))
@@ -322,6 +322,23 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.start(payload.get("account_id"))
             elif self.path == "/api/stop":
                 result = controller.stop()
+            elif self.path == "/api/orders/closed":
+                from .closed_history import read_history
+                profile = payload.get('profile', 'primary')
+                try:
+                    if profile == 'primary':
+                        with controller.lock:
+                            if payload.get('account_id') != controller.selected:
+                                raise ValueError('Selected account changed; reload closed trades')
+                            result = read_history(controller.api, controller.selected, payload)
+                    else:
+                        if controller.broker_profiles is None:
+                            raise ValueError('Broker profiles are unavailable')
+                        result = controller.broker_profiles.closed_history(profile, payload)
+                except ValueError as error:
+                    return self.reply(400, {'error': str(error)})
+                except Exception:
+                    return self.reply(502, {'error': 'Closed history could not be loaded. Check the broker connection and try again.'})
             elif self.path == "/api/orders/refresh":
                 result = controller.refresh_orders()
             elif self.path == "/api/positions/refresh":

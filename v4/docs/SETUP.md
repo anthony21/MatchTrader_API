@@ -1,5 +1,12 @@
 # Install and run v4 0.8.2
 
+For the current 0.9.0 workspace, **Choose broker login** opens the named .env
+profile selector. **Log in and list accounts** retrieves the broker's account
+choices; **Use selected account** opens the selected session. Account IDs can
+be left blank at startup. Mixed-case PLATFORM_NAME labels are supported. See
+[the updated account flow](BROKER_PROFILES.md). The tagged install commands
+below still reproduce the published 0.8.2 release.
+
 ## Fresh installation on Windows
 
 Install Python 3.12 or later, Poetry 2.2 or later (2.x), Git, and Node.js 22.12

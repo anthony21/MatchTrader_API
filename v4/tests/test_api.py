@@ -31,6 +31,32 @@ def test_login_uses_env_credentials_and_redacts_result(api_factory):
     assert "trading-test" not in result.model_dump_json()
 
 
+def test_discovery_lists_multiple_accounts_without_adopting_session(api_factory, settings, auth):
+    from matchtrader.core.errors import ConfigurationError
+    auth['tradingAccounts'].append({**auth['tradingAccounts'][0], 'tradingAccountId': '456'})
+    api, seen = api_factory(config=settings.model_copy(update={'account_id': ''}))
+    result = api.discover_accounts()
+    assert [a.tradingAccountId for a in result.tradingAccounts] == ['123', '456']
+    assert api.connection.account_id == '' and api.connection.session_expires_at is None
+    assert not api.connection._trading_token and not api.connection._session_token
+    assert len(seen) == 1 and seen[0].url.path == '/manager/mtr-login'
+    assert 'session-test' not in result.model_dump_json()
+    selected, _ = api_factory()
+    with pytest.raises(ConfigurationError):
+        selected.discover_accounts()
+
+
+def test_cached_broker_login_creates_selected_session_without_second_login(api_factory, settings):
+    discovery, seen = api_factory(config=settings.model_copy(update={'account_id': ''}))
+    auth = discovery.discover_accounts()
+    selected, selected_requests = api_factory()
+    selected.use_login(auth)
+    assert len(seen) == 1 and selected_requests == []
+    assert selected.connection.account_id == '123'
+    assert selected.connection._trading_token == 'trading-test'
+    assert not discovery.connection._trading_token
+
+
 def test_facade_stream_lifecycle_and_analysis(api_factory, monkeypatch):
     from unittest.mock import Mock
 

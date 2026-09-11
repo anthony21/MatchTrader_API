@@ -103,6 +103,23 @@ class MatchTraderAPI:
         """See endpoints/register.py and its request model."""
         return Register(self).execute(payload, **kwargs)
 
+    def discover_accounts(self):
+        """Read the authenticated account list before selecting a trading session."""
+        from .models.authentication import Authentication
+        return Authentication.model_validate(self.connection.discover_accounts())
+
+    def use_login(self, authentication):
+        """Adopt a backend-held login into this explicitly selected account owner."""
+        accounts = authentication.tradingAccounts or authentication.accounts
+        if not accounts:
+            selected = authentication.selectedTradingAccount or authentication.selectedAccount
+            accounts = [selected] if selected else []
+        data = {'token': authentication.token.get_secret_value(), 'accounts': [
+            {**a.model_dump(mode='json'), 'tradingApiToken': a.tradingApiToken.get_secret_value(),
+             'tradingAccountToken': a.tradingAccountToken} for a in accounts]}
+        self.connection.adopt_login(data)
+        return authentication
+
     def login(self, payload=None, **kwargs):
         """See endpoints/login.py and its request model."""
         if payload is None and not kwargs:

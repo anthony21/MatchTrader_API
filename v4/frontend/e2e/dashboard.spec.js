@@ -31,6 +31,43 @@ test.beforeAll(async () => {
 })
 test.afterAll(() => child?.kill())
 
+test('named login dropdown discovers accounts and selects an isolated session', async ({ page }) => {
+  const profiles = [
+    { profile: 'MTR', label: 'Aqua login', broker: 'https://one.example', account_id: '111', connection: 'disconnected', accounts: [], revision: 0 },
+    { profile: 'GTR', label: 'Second login', broker: 'https://two.example', account_id: '', connection: 'disconnected', accounts: [], revision: 0 },
+  ]
+  const calls = []
+  await page.route(/\/api\/broker-profiles(?:\/action)?$/, async route => {
+    if (route.request().method() === 'POST') {
+      const payload = route.request().postDataJSON()
+      calls.push(payload)
+      const p = profiles.find(p => p.profile === payload.profile)
+      if (payload.action === 'login') p.accounts = [{ id: '222', demo: true }, { id: '333', demo: false }]
+      if (payload.action === 'select') {
+        p.account_id = payload.account_id
+        p.connection = 'connected'
+        p.session_expires_at = '2027-01-01T00:00:00Z'
+      }
+      p.revision++
+    }
+    await route.fulfill({ json: { profiles } })
+  })
+  await page.goto(url)
+  await page.getByRole('button', { name: 'Choose broker login', exact: true }).click()
+  await page.getByLabel('Platform', { exact: true }).selectOption('GTR')
+  await page.getByRole('button', { name: 'Log in', exact: true }).click()
+  await expect(page.getByLabel('Available trading accounts')).toContainText('333')
+  await page.getByLabel('Available trading accounts').selectOption('333')
+  await page.getByRole('button', { name: 'Use selected account', exact: true }).click()
+  await expect(page.getByRole('article', { name: 'GTR broker account' })).toContainText('Session: GTR / 333')
+  expect(calls).toContainEqual({ profile: 'GTR', action: 'select', account_id: '333' })
+  await page.getByLabel('Platform', { exact: true }).selectOption('MTR')
+  await expect(page.getByLabel('Available trading accounts')).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
+  await page.screenshot({ path: 'test-results/login-account-mobile.png', fullPage: true })
+})
+
 test('copy settings save through the real local API without arming', async ({ page }) => {
   await page.goto(url)
   await page.getByRole('button', { name: 'Copy settings', exact: true }).click()
@@ -287,8 +324,9 @@ test('Broker profiles show identical account IDs in separate cards', async ({ pa
   await page.goto(url)
   await page.getByRole('button', { name: 'Broker accounts', exact: true }).click()
   await expect(page.getByRole('article', { name: 'MTR broker account' })).toContainText('100 USD')
+  await page.getByLabel('Platform', { exact: true }).selectOption('GTR')
   await expect(page.getByRole('article', { name: 'GTR broker account' })).toContainText('200 EUR')
-  await expect(page.getByRole('article', { name: 'MTR broker account' })).not.toContainText('200 EUR')
+  await expect(page.getByRole('article', { name: 'MTR broker account' })).toHaveCount(0)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: 'test-results/broker-profiles-mobile.png', fullPage: true })

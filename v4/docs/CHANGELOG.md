@@ -5,6 +5,21 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## 0.9.1 - platform-first login and session status
+
+Show only PLATFORM_NAME in the first dropdown, with login beside it and that
+platform's account choices below. Switching platform changes the displayed
+connection status and account data. Reuse unexpired logins held on the backend;
+expired sessions require refresh and unknown expiry is labeled explicitly.
+
+## 0.9.0 - choose a broker login and returned account
+
+Choose a named .env login, retrieve its available trading accounts, and open a
+session for the selected account. Friendly PLATFORM_NAME values accept mixed-case
+environment names. Empty account IDs no longer prevent dashboard startup. Account
+switching clears the previous snapshot and keeps other profiles separate; MTR
+switching requires capture stopped. Credentials and broker tokens stay on the backend.
+
 ## 0.8.2 — complete the TradingBox HTTP return path
 
 Forwarding now covers HTTP requests under /api/hcamm/, including command polls and acknowledgements. Preserve methods, original query strings, body bytes and upstream replies; correlate logs by method, path and request cycle. Support bounded chunked requests. Both Copy settings controls still gate all upstream traffic and reset off on restart.

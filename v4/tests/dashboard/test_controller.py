@@ -40,6 +40,7 @@ class FakeAPI:
             )
         ]
 
+
     def open_positions(self):
         from matchtrader.models.position import Position
 
@@ -56,6 +57,18 @@ class FakeAPI:
                 privateField="do-not-expose",
             )
         ]
+
+
+def test_start_without_account_allows_discovery_but_not_capture(settings, tmp_path):
+    controller = DashboardController(settings.model_copy(update={'account_id': ''}), tmp_path)
+    try:
+        assert controller.status()['account_id'] == ''
+        assert controller.feed() == {'account_id': '', 'events': []}
+        assert controller.bridge is None
+        with pytest.raises(ValueError):
+            controller.start('')
+    finally:
+        controller.close()
 
 
 def test_connect_discovers_accounts_and_stop_closes_owner(settings, tmp_path):

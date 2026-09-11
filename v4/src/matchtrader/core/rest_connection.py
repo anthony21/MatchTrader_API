@@ -126,7 +126,13 @@ class RestConnection(BaseConnection):
                     "Mutation returned an unreadable response; reconcile before retry"
                 ) from None
             raise ProtocolError("Expected a JSON response") from None
-        if isinstance(data, dict) and isinstance(data.get("status"), str) and data["status"] != "OK":
+        history_full = (
+            not write and method == "POST" and scope == "trading"
+            and path == f"mtr-api/{self._system}/closed-positions"
+            and isinstance(data, dict) and data.get("status") == "FULL"
+            and isinstance(data.get("operations"), list)
+        )
+        if isinstance(data, dict) and isinstance(data.get("status"), str) and data["status"] != "OK" and not history_full:
             raise APIError("Operation did not report OK; inspect broker state before continuing")
         return data
 
@@ -159,7 +165,22 @@ class RestConnection(BaseConnection):
         self._identity = identity
         self._expires = time.monotonic() + 900
 
-    def _login(self, body=None, one_time=False):
+    def discover_accounts(self):
+        """Authenticate a temporary, unselected owner without adopting an account."""
+        with self._lock:
+            self.ensure_open()
+            if self.settings.account_id or self._session_token:
+                raise ConfigurationError('Account discovery requires an unselected session')
+            return self._login(discover_only=True)
+
+    def adopt_login(self, data):
+        with self._lock:
+            self.ensure_open()
+            if not self.settings.account_id:
+                raise ConfigurationError('Select an account before adopting a login')
+            self._adopt(data, self.settings.email)
+
+    def _login(self, body=None, one_time=False, discover_only=False):
         if body is None:
             if not self.settings.email or not self.settings.password.get_secret_value():
                 raise AuthenticationError("Set MTR_EMAIL and MTR_PASSWORD in your local .env")
@@ -179,6 +200,8 @@ class RestConnection(BaseConnection):
             raise ConfigurationError("Close the active session before logging in as another identity")
         path = "/manager/login/co/with-token" if one_time else "/manager/mtr-login"
         data = self._send("POST", path, body=body)
+        if discover_only:
+            return data
         # Clear old state if login succeeds but account selection fails.
         self._session_token = self._trading_token = self._account_token = ""
         self._adopt(data, identity)

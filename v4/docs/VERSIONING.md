@@ -1,4 +1,4 @@
-# Current release: 0.8.2 (workspace v4)
+# Current release: 0.9.1 (workspace v4)
 
 Use semantic `major.minor.patch` releases from this point onward. Breaking contracts
 increment major; compatible features increment minor; compatible fixes increment patch.
@@ -10,6 +10,17 @@ Python/frontend package versions and `matchtrader.version.VERSION` must agree.
 See [the changelog](CHANGELOG.md) for readable release summaries and the Git tag
 policy. The first tagged release is 0.6.0; earlier entries below are local
 development milestones included in that release, not separately published tags.
+
+## 0.9.1 - platform-first login and token reuse
+
+Platform-name-only dropdown, adjacent login/refresh control, per-platform login
+status and account choices below. Reuse unexpired backend login tokens and
+refresh expired sessions before account selection.
+
+## 0.9.0 - broker login and account selectors
+
+Friendly .env profile names, authenticated account discovery, account-specific
+session selection and startup without a preselected account. See BROKER_PROFILES.md.
 
 ## 0.8.2 — complete the TradingBox HTTP return path
 

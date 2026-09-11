@@ -1,8 +1,12 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { request } from '../api.js'
 import { localTime } from '../time.js'
 const profiles = ref([]), busy = ref([]), error = ref('')
+const loginProfile = ref(''), tradingAccount = ref('')
+const selectedProfile = computed(() => profiles.value.find(p => p.profile === loginProfile.value))
+const loginStatus = computed(() => selectedProfile.value?.login_status || 'disconnected')
+watch(loginProfile, () => { tradingAccount.value = '' })
 let disposed = false, timer
 function apply(value) {
   if (disposed) return
@@ -10,11 +14,13 @@ function apply(value) {
     const prior = profiles.value.find(p => p.profile === row.profile)
     return prior && prior.revision > row.revision ? prior : row
   })
+  if (!profiles.value.some(p => p.profile === loginProfile.value)) loginProfile.value = profiles.value[0]?.profile || ''
+  if (!selectedProfile.value?.accounts?.some(a => a.id === tradingAccount.value)) tradingAccount.value = ''
 }
-async function act(profile, action) {
+async function act(profile, action, account_id) {
   if (busy.value.includes(profile)) return
   busy.value = [...busy.value, profile]
-  try { apply(await request('broker-profiles/action', { profile, action })); error.value = '' }
+  try { apply(await request('broker-profiles/action', { profile, action, ...(account_id ? { account_id } : {}) })); error.value = '' }
   catch (e) { if (!disposed) error.value = e.message }
   finally { busy.value = busy.value.filter(p => p !== profile) }
 }
@@ -25,20 +31,36 @@ async function poll() {
   } catch (e) { if (!disposed) error.value = e.message }
   if (!disposed) timer = setTimeout(poll, 5000)
 }
-function connectAll() { return Promise.all(profiles.value.filter(p => p.account_id && p.connection !== 'connected').map(p => act(p.profile, 'connect'))) }
 onMounted(poll)
 onUnmounted(() => { disposed = true; clearTimeout(timer) })
 </script>
 <template>
   <section class="brokers-page">
-    <div class="card broker-intro"><h2>Broker accounts</h2><p>Up to five independent profiles. Each card keeps its own broker, account, currency and snapshots.</p>
-      <button @click="connectAll">Connect configured accounts</button><p>Connected cards refresh every five seconds while this page is open. Connections stay open when you leave.</p>
+    <div class="card broker-intro"><h2>Broker accounts</h2><p>Choose a login from .env, then select a trading account returned by that broker.</p>
+      <div class="login-picker">
+        <label>Platform<select v-model="loginProfile" aria-label="Platform" :disabled="!profiles.length">
+          <option v-for="p in profiles" :key="p.profile" :value="p.profile">{{ p.label || p.profile }}</option>
+        </select></label>
+        <button :disabled="!loginProfile || busy.includes(loginProfile) || loginStatus === 'connected'" @click="act(loginProfile, loginStatus === 'disconnected' ? 'login' : 'refresh_login')">{{ busy.includes(loginProfile) ? 'Working…' : loginStatus === 'connected' ? 'Logged in' : loginStatus === 'disconnected' ? 'Log in' : 'Refresh login' }}</button>
+        <p class="platform-status" role="status">{{ selectedProfile?.label || loginProfile }}: {{ loginStatus === 'connected' ? 'Connected' : loginStatus === 'expired' ? 'Session expired — refresh login' : loginStatus === 'expiry unknown' ? 'Logged in — token expiry unavailable; refresh to verify' : 'Not connected' }}<span v-if="selectedProfile?.login_expires_at"> · Expires {{ localTime(selectedProfile.login_expires_at) }}</span></p>
+        <template v-if="selectedProfile?.accounts?.length">
+          <label class="account-picker">Available trading accounts<select v-model="tradingAccount" aria-label="Available trading accounts" :disabled="busy.includes(loginProfile)">
+            <option value="" disabled>Select an account</option>
+            <option v-for="a in selectedProfile.accounts" :key="`${loginProfile}:${a.id}`" :value="a.id">{{ a.id }}{{ a.demo ? ' · Demo' : '' }}</option>
+          </select></label>
+          <button :disabled="!tradingAccount || busy.includes(loginProfile)" @click="act(loginProfile, 'select', tradingAccount)">Use selected account</button>
+        </template>
+      </div>
+      <p v-if="selectedProfile?.accounts?.length">{{ selectedProfile.accounts.length }} accounts returned by {{ loginProfile }}. Selecting one opens its account session; credentials and tokens stay on the backend.</p>
+      <p>Only the selected platform is shown. Other platform sessions stay separate. Connected accounts refresh every five seconds while this page is open.</p>
       <p v-if="error" role="alert">{{ error }}</p>
+      <p v-if="selectedProfile?.error" role="alert">{{ selectedProfile.error }}</p>
       <p v-if="!profiles.length">No profiles loaded. Restart the v4 backend after editing .env.</p></div>
-    <article v-for="p in profiles" :key="p.profile" class="card broker-card" :aria-label="`${p.profile} broker account`">
-      <h3>{{ p.profile }} · Account {{ p.account_id || 'not configured' }}</h3><p>{{ p.broker }}</p>
+    <article v-for="p in profiles.filter(p => p.profile === loginProfile)" :key="p.profile" class="card broker-card" :aria-label="`${p.profile} broker account`">
+      <h3>{{ p.label || p.profile }} ({{ p.profile }}) · Account {{ p.account_id || 'not configured' }}</h3><p>{{ p.broker }}</p>
       <strong>{{ p.connection }}</strong><p v-if="p.error" role="alert">{{ p.error }}</p>
-      <div class="broker-actions"><button :disabled="busy.includes(p.profile) || !p.account_id || p.connection === 'connected'" @click="act(p.profile, 'connect')">Connect {{ p.profile }}</button>
+      <p v-if="p.connection === 'connected'">Session: {{ p.profile }} / {{ p.account_id }} · {{ p.session_expires_at ? `Expires ${localTime(p.session_expires_at)}` : 'Expiration unavailable' }}</p>
+      <div class="broker-actions">
         <button :disabled="busy.includes(p.profile) || p.connection !== 'connected'" @click="act(p.profile, 'refresh')">Refresh {{ p.profile }}</button>
         <button :disabled="busy.includes(p.profile) || p.connection !== 'connected'" @click="act(p.profile, 'disconnect')">Disconnect {{ p.profile }}</button></div>
       <div v-if="p.balance" class="broker-balance"><span>Balance <strong>{{ p.balance.balance }} {{ p.balance.currency }}</strong></span><span>Equity <strong>{{ p.balance.equity }} {{ p.balance.currency }}</strong></span></div>
@@ -53,5 +75,7 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
   </section>
 </template>
 <style scoped>
+.login-picker{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:16px 0}.login-picker label{display:grid;gap:8px;min-width:0;max-width:100%}.login-picker select{padding:10px;max-width:100%;border:1px solid #ced8e4;border-radius:7px}
+.platform-status{flex-basis:100%;margin:0}.account-picker{min-width:240px}
 .brokers-page{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:18px}.broker-intro{grid-column:1/-1}.broker-intro,.broker-card{padding:22px;min-width:0}.broker-card p,.broker-card small{overflow-wrap:anywhere;color:#52647a}.broker-actions{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.brokers-page button{padding:9px;border:1px solid #ced8e4;border-radius:7px;cursor:pointer}.broker-balance{display:flex;gap:22px;flex-wrap:wrap}.broker-balance strong{display:block;font-size:21px}.broker-trade{border-top:1px solid #dbe3ed;padding:12px 0;overflow-wrap:anywhere}.broker-trade small{display:block;margin-top:6px}
 </style>

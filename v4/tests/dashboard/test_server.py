@@ -91,7 +91,7 @@ def test_mapping_endpoint_is_authenticated_and_account_scoped(server):
     assert status == 200
     assert json.loads(body) == {'account_id': '123', 'mappings': []}
     _, raw = call(server, '/api/status', headers={'X-Session-Token': 'test-session'})
-    assert json.loads(raw)['version'] == '0.8.2'
+    assert json.loads(raw)['version'] == '0.9.1'
 
 
 def test_api_requires_session_and_can_start_stop(server):
@@ -235,6 +235,19 @@ def test_broker_profile_actions_require_session_and_known_profile(server):
     assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'MTR', 'action': 'trade'}, headers)[0] == 400
 
 
+def test_profile_login_and_selection_require_session_and_forward_account_id(server):
+    calls = []
+    server.controller.broker_profiles = SimpleNamespace(
+        action=lambda *args: calls.append(args), snapshot=lambda: {'profiles': []}, close=lambda: None)
+    for action in ['login', 'select']:
+        payload = {'profile': 'GTR', 'action': action, 'account_id': '222'}
+        assert call(server, '/api/broker-profiles/action', 'POST', payload)[0] == 401
+        assert not calls
+        assert call(server, '/api/broker-profiles/action', 'POST', payload,
+                    {'X-Session-Token': 'test-session'})[0] == 200
+        assert calls.pop() == ('GTR', action, '222')
+
+
 def test_tradingbox_gate_is_authenticated_and_separate_from_copying(server, tmp_path):
     from matchtrader.capture.tradingbox_forwarder import TradingBoxForwarder
     calls = []
@@ -322,3 +335,18 @@ def test_tradingbox_chunked_payload_and_ambiguous_framing(server, tmp_path):
     ]:
         assert b'400 Bad Request' in exchange(headers, body)
     assert len(sent) == 1
+
+
+def test_closed_history_is_authenticated_and_account_scoped(server):
+    from tests.dashboard.test_closed_history import WINDOW, broker, trade
+    fake = broker([trade()])
+    fake.close = lambda: None
+    server.controller.api = fake
+    server.controller.selected = '123'
+    payload = {**WINDOW, 'account_id': '123'}
+    assert call(server, '/api/orders/closed', 'POST', payload)[0] == 401
+    headers = {'X-Session-Token': 'test-session'}
+    code, raw = call(server, '/api/orders/closed', 'POST', payload, headers)
+    assert code == 200 and json.loads(raw)['summary']['closed'] == 1
+    assert call(server, '/api/orders/closed', 'POST', {**payload, 'account_id': 'other'}, headers)[0] == 400
+    assert call(server, '/api/orders/closed', 'POST', payload, {**headers, 'Origin': 'https://attacker.example'})[0] == 403

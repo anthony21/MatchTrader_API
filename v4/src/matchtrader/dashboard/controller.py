@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -47,9 +48,7 @@ class DashboardController:
         self.api_factory = api_factory
         ids = list(dict.fromkeys([settings.account_id, *accounts]))
         self.accounts = [{"id": value, "verified": False} for value in ids if value]
-        if not self.accounts:
-            raise ValueError("Set MTR_ACCOUNT_ID before starting the dashboard")
-        self.selected = self.accounts[0]["id"]
+        self.selected = self.accounts[0]["id"] if self.accounts else ''
         self.connection = "disconnected"
         self.connection_message = "Connect to verify this account and discover your other accounts."
         self.capture_message = "Stopped. Starting captures new events only."
@@ -77,6 +76,8 @@ class DashboardController:
         self._open_journal()
 
     def _open_journal(self):
+        if not self.selected:
+            return
         key = hashlib.sha256((self.settings.platform_url + ":" + self.selected).encode()).hexdigest()[:20]
         self.bridge = ShadowBridge(self.selected, self.data_dir / f"{key}.sqlite3")
 
@@ -89,7 +90,8 @@ class DashboardController:
             if self.api:
                 self.api.close()
                 self.api = None
-            self.bridge.journal.close()
+            if self.bridge:
+                self.bridge.journal.close()
             self.selected = account_id
             self.connection = "disconnected"
             self.orders = []
@@ -99,7 +101,7 @@ class DashboardController:
             self.native.armed = False
             self._open_journal()
 
-    def connect(self, account_id):
+    def connect(self, account_id, *, authentication=None):
         with self.lifecycle, self.lock:
             if self.running:
                 raise ValueError("Stop capture before connecting")
@@ -114,9 +116,12 @@ class DashboardController:
             self.positions_at = None
             self.native.armed = False
             self.native.demo_verified = False
-            candidate = self.api_factory(self.settings.model_copy(update={"account_id": account_id}))
+            overrides = {"account_id": account_id}
+            if account_id != self.settings.account_id:
+                overrides.update(system_uuid='', ws_url='', ws_headers_json='{}', ws_subprotocol='')
+            candidate = self.api_factory(self.settings.model_copy(update=overrides))
             try:
-                auth = candidate.login()
+                auth = candidate.use_login(authentication) if authentication is not None else candidate.login()
                 found = auth.tradingAccounts or auth.accounts
                 if not found:
                     selected = auth.selectedTradingAccount or auth.selectedAccount
@@ -377,7 +382,8 @@ class DashboardController:
         if self.capture_websocket:
             self.capture_websocket.close()
         self.stop()
-        self.bridge.journal.close()
+        if self.bridge:
+            self.bridge.journal.close()
         self.native_store.close()
         self.relay_logs.close()
         self.logging_events.close()
@@ -425,7 +431,9 @@ class DashboardController:
             }
 
     def feed(self):
-        with self.lock, self.bridge.journal.lock:
+        with self.lock, (self.bridge.journal.lock if self.bridge else nullcontext()):
+            if self.bridge is None:
+                return {'account_id': '', 'events': []}
             db = self.bridge.journal.db
             events = db.execute(
                 "SELECT received_at,payload,result FROM events ORDER BY rowid DESC LIMIT 200"

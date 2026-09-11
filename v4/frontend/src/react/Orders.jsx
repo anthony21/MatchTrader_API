@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { localTime } from '../time.js'
 import './orders.css'
+import ClosedOrders from './ClosedOrders.jsx'
 
 const value = v => v === null || v === undefined || v === '' ? '—' : String(v)
 const price = v => v == null || Number(v) === 0 ? '—' : value(v)
@@ -53,7 +54,7 @@ export default function Orders({ state = {}, mappings = [], busy, onRefresh }) {
   const totalPages = Math.max(1, Math.ceil(filtered.length / 12))
   const currentPage = Math.min(page, totalPages)
   const changeTab = next => { setPage(1); setTab(next); setSearch(''); setReviewOnly(false) }
-  const names = { positions: 'Open positions', pending: 'Pending orders', activity: 'Copy activity' }
+  const names = { positions: 'Open positions', pending: 'Pending orders', activity: 'Copy activity', closed: 'Closed trades' }
   return <section className="orders-workspace" aria-label="Orders workspace">
     <div className="orders-overview"><div className="orders-intro"><div><span className="orders-kicker">YOUR TRADING DESK</span><h2>Every trade, clearly.</h2><p>Account {state.account_id || 'not selected'} <span className={`orders-dot ${connected ? 'online' : ''}`} /> {connected ? 'Connected' : 'Disconnected'}</p></div>
       <button className="primary" disabled={busy || !connected} onClick={onRefresh}>{busy ? 'Refreshing…' : 'Refresh broker data'}</button></div>
@@ -61,7 +62,8 @@ export default function Orders({ state = {}, mappings = [], busy, onRefresh }) {
         <span>{names[key]}</span><strong>{count}</strong><small>{description}</small></button>)}</div>
     </div>
     <div className="orders-board"><div className="orders-navigation"><nav aria-label="Order views">{Object.entries(names).map(([key, name]) => <button key={key} aria-pressed={tab === key} onClick={() => changeTab(key)}>{name}</button>)}</nav>
-      <input aria-label="Search orders" placeholder="Search instrument, strategy or ID…" value={search} onChange={e => { setPage(1); setSearch(e.target.value) }} /></div>
+      {tab !== 'closed' && <input aria-label="Search orders" placeholder="Search instrument, strategy or ID…" value={search} onChange={e => { setPage(1); setSearch(e.target.value) }} />}</div>
+      {tab === 'closed' ? <ClosedOrders state={state} /> : <>
       <div className="orders-section-title"><div><h3>{names[tab]}</h3><p>{tab === 'activity' ? 'Quantower → broker · linked IDs and execution evidence' : snapshot ? `Snapshot ${localTime(snapshot)}${connected ? ' · refreshes every 5 seconds' : ' · disconnected, saved snapshot'}` : 'Connect your account to load a broker snapshot.'}</p></div>
         {tab === 'activity' && <label className="orders-review"><input type="checkbox" checked={reviewOnly} onChange={e => { setPage(1); setReviewOnly(e.target.checked) }} /> Needs review ({mappings.filter(needsReview).length})</label>}</div>
       {tab !== 'activity' && !snapshot ? <Empty title="Broker data not loaded">Log in above, then refresh broker data to see {names[tab].toLowerCase()}.</Empty> : !filtered.length ? <Empty title={query || reviewOnly ? 'No matching trades' : tab === 'activity' ? 'No copy activity yet' : tab === 'positions' ? 'No open positions' : 'No pending orders'}>{query || reviewOnly ? 'Try another search or clear your filters.' : tab === 'activity' ? 'Captured Quantower trades will appear here with their broker relationships.' : 'This broker snapshot contains no trades in this view.'}</Empty> :
@@ -87,6 +89,7 @@ export default function Orders({ state = {}, mappings = [], busy, onRefresh }) {
         })}</div>}
       {filtered.length > 12 && <nav className="orders-pagination" aria-label="Trade pages"><span>Page {currentPage} of {totalPages} · {filtered.length} trades</span><button disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>Previous</button><button disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)}>Next</button></nav>}
       <div className="orders-footnote">{tab === 'activity' ? 'Source capture and linked IDs do not prove a broker fill. Internal IDs are available inside each trade.' : 'Broker snapshots are account-specific. Missing P/L is shown as unavailable; pending orders do not have P/L.'}</div>
+      </>}
     </div>
   </section>
 }

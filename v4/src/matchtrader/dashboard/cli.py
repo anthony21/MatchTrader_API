@@ -10,7 +10,7 @@ from ..capture.route import RouteConfig
 from ..capture.tradingbox_forwarder import TradingBoxForwarder
 from ..capture.ws_ingress import CaptureWebSocketServer
 from ..core.settings import Settings
-from .broker_profiles import BrokerProfiles, load_profiles
+from .broker_profiles import BrokerProfiles, load_profile_names, load_profiles
 from .controller import DashboardController
 from .server import DashboardHTTPServer
 
@@ -56,7 +56,7 @@ def main(argv=None):
         csv_limit=args.csv_limit,
         interactive_copying=True,
     )
-    controller.broker_profiles = BrokerProfiles(profile_settings, controller)
+    controller.broker_profiles = BrokerProfiles(profile_settings, controller, names=load_profile_names(args.env))
     controller.tradingbox_forwarder = TradingBoxForwarder(
         args.data / 'tradingbox-forwarding.json', controller.logging_events, controller.native_store.raw_log,
         api_key=env.get('TB_FORWARD_API_KEY') or '',
