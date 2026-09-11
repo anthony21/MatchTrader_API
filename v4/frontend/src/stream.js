@@ -1,7 +1,7 @@
 import { openEventStream } from './api.js'
 
 // One authenticated connection; reconnects obtain a fresh journal snapshot.
-export function followNativeEvents(onEvents, onState) {
+export function followNativeEvents(onEvents, onState, path = 'capture/stream') {
   let stopped = false, retry, frame, latest, controller, failures = 0
   const deliver = events => {
     latest = events
@@ -15,7 +15,7 @@ export function followNativeEvents(onEvents, onState) {
     onState(failures ? 'reconnecting' : 'connecting')
     let reader, idleTimer
     try {
-      const response = await openEventStream(controller.signal)
+      const response = await openEventStream(controller.signal, path)
       reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''

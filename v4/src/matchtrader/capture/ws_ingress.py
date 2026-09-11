@@ -24,6 +24,7 @@ class CaptureWebSocketServer:
         self.controller, self.token, self.port = controller, token, port
         self.queue_limit, self.max_inflight = queue_limit, max_inflight
         self.metrics = DispatchMetrics()
+        self.raw_log = controller.native_store.raw_log
         self.guard = Lock()
         self.health = {'listening': False, 'connected_senders': 0, 'machines': [], 'queued': 0,
                        'in_progress': 0, 'received': 0, 'acknowledged': 0, 'rejected': 0,
@@ -132,6 +133,7 @@ class CaptureWebSocketServer:
             while True:
                 message, release = await client['out'].get()
                 await asyncio.wait_for(client['ws'].send(json.dumps(message)), timeout=5)
+                self.raw_log.append('out', 'websocket', message, self.token)
                 identity = message.get('event_id')
                 if identity and release:
                     client['inflight'].discard(identity)
@@ -148,11 +150,13 @@ class CaptureWebSocketServer:
         client = {'ws': ws, 'out': asyncio.Queue(64), 'inflight': set(), 'closed': False, 'closer': None}
         try:
             first = await asyncio.wait_for(ws.recv(), timeout=5)
+            self.raw_log.append('in', 'websocket', first, self.token)
             if not isinstance(first, str):
                 await ws.close(1003, 'Text JSON required')
                 return
             machine = protocol.hello(protocol.decode(first))
             if machine in self.machines:
+                self.raw_log.append('out', 'websocket', protocol.nack('sender_busy'), self.token)
                 await ws.send(json.dumps(protocol.nack('sender_busy')))
                 await ws.close(1008, 'Machine already connected')
                 return
@@ -165,6 +169,7 @@ class CaptureWebSocketServer:
                                 'copying_armed': self.controller.native.armed})
             async for raw in ws:
                 received = perf_counter_ns()
+                self.raw_log.append('in', 'websocket', raw, self.token)
                 if not isinstance(raw, str):
                     await ws.close(1003, 'Text JSON required')
                     break
@@ -175,6 +180,7 @@ class CaptureWebSocketServer:
                     continue
                 self._admit(client, event, received, perf_counter_ns())
         except protocol.ProtocolFault as exc:
+            self.raw_log.append('out', 'websocket', protocol.nack(exc.code, exc.event_id), self.token)
             await ws.send(json.dumps(protocol.nack(exc.code, exc.event_id)))
             await ws.close(1008, 'Invalid capture hello')
         except TimeoutError:

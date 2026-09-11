@@ -13,10 +13,10 @@ let child
 
 test.beforeAll(async () => {
   writeFileSync(ledger, 'utc,kind,label,symbol,side,entry,sl,tp\n')
-  writeFileSync(localEnv, `MTR_BRIDGE_TOKEN=stream-test-token-with-32-characters\nMTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test-account\nMTR_ACCOUNT_IDS=second-test-account\nMTR_R01_LEDGER=${ledger.replaceAll('\\', '/')}\n`)
+  writeFileSync(localEnv, `TB_FORWARD_API_KEY=test-tradingbox-native-key\nMTR_BRIDGE_TOKEN=stream-test-token-with-32-characters\nMTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test-account\nMTR_ACCOUNT_IDS=second-test-account\nMTR_R01_LEDGER=${ledger.replaceAll('\\', '/')}\n`)
   const python = process.env.E2E_PYTHON || (process.platform === 'win32'
     ? join(root, '.venv/Scripts/python.exe') : join(root, '.venv/bin/python'))
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MTR_')))
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MTR_') && !key.startsWith('TB_FORWARD_')))
   child = spawn(python, ['-m', 'matchtrader.dashboard.cli', '--port', '8766', '--ws-port', '0', '--env', localEnv,
     '--assets', join(root, 'frontend/dist'), '--data', join(directory, 'data')],
     { cwd: root, env: environment, windowsHide: true, stdio: 'pipe' })
@@ -43,7 +43,7 @@ test('copy settings save through the real local API without arming', async ({ pa
   await page.getByLabel('This destination is dedicated').check()
   await page.getByLabel('Other copiers, including').check()
   await page.getByRole('button', { name: 'Save copy settings' }).click()
-  await expect(page.getByRole('status')).toContainText('Settings saved')
+  await expect(page.getByRole('status').filter({ hasText: 'Settings saved' })).toBeVisible()
   await page.reload()
   await page.getByRole('button', { name: 'Copy settings', exact: true }).click()
   await expect(page.getByLabel('QT symbol', { exact: true })).toHaveValue('EUR/USD')
@@ -238,4 +238,82 @@ test('Orders cards show readable trades and keep full IDs in expandable details 
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false)
   await page.screenshot({ path: 'test-results/orders-cards-mobile.png', fullPage: true })
   expect(errorMessages).toEqual([])
+})
+
+test('Raw events receives live JSON without a second persistent log', async ({ page }) => {
+  await page.goto(url)
+  await page.getByRole('button', { name: 'Start capture', exact: true }).click()
+  await page.getByRole('button', { name: 'Raw events', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('Live messages')
+  const result = await page.evaluate(async () => {
+    const response = await fetch('/capture/events', {
+      method: 'POST', headers: { Authorization: 'Bearer stream-test-token-with-32-characters', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: 'raw-browser-proof', machine: 'test', connection_id: 'test', account_id: 'test',
+        emitted_at: new Date().toISOString(), kind: 'SIGNAL', source: 'X17', symbol: 'RAWTEST' }),
+    })
+    return response.status
+  })
+  expect(result).toBe(202)
+  await page.getByLabel('Search raw JSON').fill('RAWTEST')
+  await expect(page.locator('.raw-message')).toHaveCount(1)
+  await page.locator('.raw-message summary').click()
+  await expect(page.locator('.raw-message pre')).toContainText('raw-browser-proof')
+  await expect(page.locator('.raw-workspace')).toContainText('Memory only')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/raw-events-mobile.png', fullPage: true })
+  await page.getByRole('button', { name: 'Stop & disconnect' }).click()
+})
+
+test('Event logging records unknown intent while capture is stopped', async ({ page, request }) => {
+  await page.goto(url)
+  await page.getByRole('button', { name: 'Event logging', exact: true }).click()
+  const response = await request.post(url + '/logging/events', { headers: { Authorization: 'Bearer stream-test-token-with-32-characters' }, data: { source: 'X17', kind: 'UNFAMILIAR_SETUP', level: '777.123', api_key: 'private-test-value' } })
+  const result = { status: response.status(), body: await response.json() }
+  expect(result.status).toBe(202)
+  expect(result.body.executed).toBe(false)
+  expect(result.body.forwarded).toBe(false)
+  await expect(page.locator('.logging-page details')).toHaveCount(1)
+  await page.locator('.logging-page summary').click()
+  await expect(page.locator('.logging-page pre')).toContainText('777.123')
+  await expect(page.locator('.logging-page pre')).not.toContainText('private-test-value')
+  await expect(page.locator('.mode-pill')).toContainText('API trading off')
+})
+
+test('Broker profiles show identical account IDs in separate cards', async ({ page }) => {
+  const profiles = ['MTR', 'GTR'].map((profile, i) => ({ profile, account_id: '123', broker: `https://broker${i}.example`, connection: 'connected', revision: 1, balance: { balance: i ? '200' : '100', equity: i ? '201' : '101', currency: i ? 'EUR' : 'USD' }, orders: [], positions: [] }))
+  await page.route('**/api/broker-profiles', route => route.fulfill({ json: { profiles } }))
+  await page.route('**/api/broker-profiles/action', route => route.fulfill({ json: { profiles } }))
+  await page.goto(url)
+  await page.getByRole('button', { name: 'Broker accounts', exact: true }).click()
+  await expect(page.getByRole('article', { name: 'MTR broker account' })).toContainText('100 USD')
+  await expect(page.getByRole('article', { name: 'GTR broker account' })).toContainText('200 EUR')
+  await expect(page.getByRole('article', { name: 'MTR broker account' })).not.toContainText('200 EUR')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/broker-profiles-mobile.png', fullPage: true })
+})
+
+
+test('TradingBox controls require separate Live activation and turn off together', async ({ page, request }) => {
+  await page.goto(url)
+  await page.getByRole('button', { name: 'Copy settings', exact: true }).click()
+  const section = page.getByRole('region', { name: 'TradingBox forwarding' })
+  await expect(section).toContainText('Off · logging only')
+  await page.getByLabel('TradingBox destination URL').fill('https://tradingbox.pro/api/hcamm/events')
+  await page.getByRole('button', { name: 'Save TradingBox destination' }).click()
+  await page.getByRole('button', { name: 'Turn forwarding on', exact: true }).click()
+  await expect(section).toContainText('Preview · no signals sent')
+  const preview = await request.post(url + '/api/hcamm/events', { headers: { 'X-HCAMM-Key': 'test-tradingbox-native-key' }, data: { kind: 'X17_SETUP', exactPrice: '4300.00' } })
+  expect(preview.status()).toBe(202)
+  expect((await preview.json()).forwarded).toBe(false)
+  await page.getByRole('button', { name: 'Go live with TradingBox' }).click()
+  await expect(section).toContainText('LIVE · sending new signals')
+  // No signals are submitted while live; upstream delivery uses isolated unit fixtures.
+  await page.getByRole('button', { name: 'Turn forwarding off', exact: true }).click()
+  await expect(section).toContainText('Off · logging only')
+  await expect(section).toContainText('0 upstream replies')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/tradingbox-forwarding-mobile.png', fullPage: true })
 })

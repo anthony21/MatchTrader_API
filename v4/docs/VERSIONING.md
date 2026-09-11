@@ -1,4 +1,4 @@
-# Current release: 0.6.0 (workspace v4)
+# Current release: 0.8.2 (workspace v4)
 
 Use semantic `major.minor.patch` releases from this point onward. Breaking contracts
 increment major; compatible features increment minor; compatible fixes increment patch.
@@ -10,6 +10,28 @@ Python/frontend package versions and `matchtrader.version.VERSION` must agree.
 See [the changelog](CHANGELOG.md) for readable release summaries and the Git tag
 policy. The first tagged release is 0.6.0; earlier entries below are local
 development milestones included in that release, not separately published tags.
+
+## 0.8.2 — complete the TradingBox HTTP return path
+
+Forwarding now covers HTTP requests under /api/hcamm/, including command polls and acknowledgements. Preserve methods, original query strings, body bytes and upstream replies; correlate logs by method, path and request cycle. Support bounded chunked requests. Both Copy settings controls still gate all upstream traffic and reset off on restart.
+
+## 0.8.1 - controlled TradingBox signal forwarding
+
+Copy settings adds independent forwarding and Live controls, off on restart. New authenticated indicator requests can be delivered without translating their payloads. See TRADINGBOX_FORWARDING.md.
+
+## 0.8.0 - independent broker profiles
+
+Up to five environment profiles with separate connection controls, read sessions and snapshots. See BROKER_PROFILES.md.
+
+## 0.7.1 - logging-only observation ingress
+
+Authenticated opaque HTTP logging, receipt IDs and a rolling archive with a saved-log viewer. No TradingBox forwarding or broker execution. See LOGGING_INGRESS.md.
+
+## 0.7.0 - bounded raw event monitor
+
+Live application-message diagnostics, pre-validation JSON and receiver replies,
+search and display pause. Memory-only rollover adds no diagnostic disk writes.
+The authoritative journal is preserved. See [Raw events](RAW_EVENTS.md).
 
 ## 0.6.0 - readable Orders workspace
 

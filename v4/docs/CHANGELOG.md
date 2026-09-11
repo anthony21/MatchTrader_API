@@ -5,6 +5,34 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## 0.8.2 — complete the TradingBox HTTP return path
+
+Forwarding now covers HTTP requests under /api/hcamm/, including command polls and acknowledgements. Preserve methods, original query strings, body bytes and upstream replies; correlate logs by method, path and request cycle. Support bounded chunked requests. Both Copy settings controls still gate all upstream traffic and reset off on restart.
+
+## 0.8.1 — TradingBox forwarding controls
+
+Copy settings now controls Off, Preview and Live delivery for incoming TradingBox signal requests. Bodies and end-to-end headers pass through unchanged; correlated request/response logs distinguish local recording, upstream replies and unknown delivery outcomes. No automatic retries, redirects or history replay. Forwarding and Live always start off; Aqua copying stays separate.
+
+## 0.8.0 — concurrent broker profiles
+
+Load up to five explicit .env profiles such as MTR and GTR. Connect, refresh and disconnect each separately; balances, currency, orders, positions and errors remain scoped to the broker/account. The primary workspace reuses its existing connection. No multi-destination copy routing is introduced.
+
+## 0.7.1 — logging-only observation patch
+
+Opaque authenticated event receipts, bounded private archive and saved-log viewer. Unknown JSON/text/binary events are observations only; no forwarding or copying is added.
+
+## 0.7.0 — live raw event viewer
+
+- Inspect incoming WebSocket application messages before validation and receiver
+  replies, including rejected event diagnostics, with local receipt timestamps.
+- Search JSON, filter direction, expand messages and pause the display without
+  stopping capture. Authenticated native HTTP traffic is labeled separately.
+- Keep diagnostics in a rolling memory buffer: 500 entries / 2 MiB serialized
+  maximum; no additional diagnostic files or SQLite rows. The trade journal and
+  the separate sender's receipts are unchanged and still require storage planning.
+- Validate with raw-buffer bounds/redaction tests, rejected-message WebSocket
+  integration, frontend tests and browser checks. No live trade was submitted.
+
 ## 0.6.0 — readable Orders and accumulated capture improvements
 
 This is the first tagged release after the initial repository import. The changes

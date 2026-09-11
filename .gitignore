@@ -17,3 +17,4 @@
 **/*.egg-info/
 **/test-results/
 **/playwright-report/
+/x.0.1/

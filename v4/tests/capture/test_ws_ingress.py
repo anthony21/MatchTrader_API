@@ -58,6 +58,17 @@ def greet(ws, machine='qt'):
     return json.loads(ws.recv(timeout=3))
 
 
+def test_raw_monitor_includes_rejected_messages_without_journaling(receiver):
+    with client(receiver) as ws:
+        assert greet(ws)['type'] == 'ready'
+        ws.send('{invalid json')
+        assert json.loads(ws.recv(timeout=3))['type'] == 'nack'
+    rows = receiver.controller.native_store.raw_log.stream_snapshot()['events']
+    assert any(row['raw'] == '{invalid json' for row in rows)
+    assert any('invalid_json' in row['raw'] or 'invalid_event' in row['raw'] for row in rows)
+    assert receiver.controller.native_store.db.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 0
+
+
 def envelope(event, **updates):
     return json.dumps({'type': 'event', 'transport_version': '1.0.0',
                        'event': event.model_copy(update={'schema_version': '1.1.0', **updates}).model_dump(mode='json')})

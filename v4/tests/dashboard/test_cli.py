@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from matchtrader.dashboard.cli import main
@@ -20,6 +22,8 @@ def test_websocket_lifecycle_is_owned_by_dashboard(tmp_path, monkeypatch, ws_por
     class Controller:
         def __init__(self, *args, **kwargs):
             self.capture_websocket = None
+            self.logging_events = None
+            self.native_store = SimpleNamespace(raw_log=None)
         def close(self):
             if self.capture_websocket:
                 self.capture_websocket.close()
@@ -40,5 +44,5 @@ def test_websocket_lifecycle_is_owned_by_dashboard(tmp_path, monkeypatch, ws_por
     monkeypatch.setattr(cli, 'DashboardController', Controller)
     monkeypatch.setattr(cli, 'DashboardHTTPServer', HTTP)
     monkeypatch.setattr(cli, 'CaptureWebSocketServer', WebSocket)
-    main(['--assets', str(tmp_path), '--env', str(environment), '--ws-port', str(ws_port)])
+    main(['--assets', str(tmp_path), '--env', str(environment), '--ws-port', str(ws_port), '--data', str(tmp_path / 'data')])
     assert calls == (['ws-start', 'ws-close', 'controller-close'] if ws_port else ['controller-close'])

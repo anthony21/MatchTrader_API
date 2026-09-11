@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { request } from '../api.js'
+import TradingBoxForwarding from './TradingBoxForwarding.vue'
 
 const props = defineProps({ state: Object })
 const emit = defineEmits(['saved'])
@@ -47,6 +48,7 @@ async function save() {
 <template>
   <section class="card copy-settings">
     <h2>Copy settings</h2>
+    <TradingBoxForwarding />
     <p>Use the quantities, entry, SL and TP actually submitted by Quantower. Saving settings keeps copying off.</p>
     <p v-if="state.copying" role="alert">Stop API trading on the Trading bridge page before editing settings.</p>
     <form @submit.prevent="save">

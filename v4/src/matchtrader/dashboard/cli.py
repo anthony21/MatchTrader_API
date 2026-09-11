@@ -7,8 +7,10 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from ..capture.route import RouteConfig
+from ..capture.tradingbox_forwarder import TradingBoxForwarder
 from ..capture.ws_ingress import CaptureWebSocketServer
 from ..core.settings import Settings
+from .broker_profiles import BrokerProfiles, load_profiles
 from .controller import DashboardController
 from .server import DashboardHTTPServer
 
@@ -44,6 +46,7 @@ def main(argv=None):
         parser.error('WebSocket capture requires MTR_BRIDGE_TOKEN')
     ledger = env.get("MTR_R01_LEDGER")
     accounts = [x.strip() for x in (env.get("MTR_ACCOUNT_IDS", "") or "").split(",") if x.strip()]
+    profile_settings = load_profiles(args.env)
     controller = DashboardController(
         Settings.from_env(args.env),
         args.data,
@@ -53,6 +56,11 @@ def main(argv=None):
         csv_limit=args.csv_limit,
         interactive_copying=True,
     )
+    controller.broker_profiles = BrokerProfiles(profile_settings, controller)
+    controller.tradingbox_forwarder = TradingBoxForwarder(
+        args.data / 'tradingbox-forwarding.json', controller.logging_events, controller.native_store.raw_log,
+        api_key=env.get('TB_FORWARD_API_KEY') or '',
+        auth_header=env.get('TB_FORWARD_AUTH_HEADER') or 'X-HCAMM-Key')
     try:
         if ws_port and token:
             controller.capture_websocket = CaptureWebSocketServer(controller, token, ws_port)

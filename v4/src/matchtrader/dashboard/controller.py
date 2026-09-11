@@ -10,8 +10,10 @@ from time import monotonic
 from ..api import MatchTraderAPI
 from ..bridge.api import ShadowBridge
 from ..bridge.ledger import LedgerTail
+from ..capture.logging_store import LoggingStore
 from ..capture.meaning import meaning
 from ..capture.reconcile import reconcile
+from ..capture.relay_store import RelayLogStore
 from ..capture.router import CaptureRouter
 from ..capture.store import CaptureStore
 from ..core.errors import APIError
@@ -55,6 +57,8 @@ class DashboardController:
         self.capture_generation = 0
         self.capture_websocket = None
         self.api = None
+        self.broker_profiles = None
+        self.tradingbox_forwarder = None
         self.bridge = None
         self.orders = []
         self.orders_at = None
@@ -62,6 +66,8 @@ class DashboardController:
         self.positions_at = None
         self.native_store = CaptureStore(data_dir / "quantower", csv_limit, broker=settings.platform_url, background_exports=True)
         self.native = CaptureRouter(self.native_store, route)
+        self.relay_logs = RelayLogStore(data_dir / 'relay')
+        self.logging_events = LoggingStore(data_dir / 'logging')
         self.token_message = ""
         self.reconciliation_message = ""
         self.lock = RLock()
@@ -364,11 +370,17 @@ class DashboardController:
                 return self.status()
 
     def close(self):
+        if self.tradingbox_forwarder:
+            self.tradingbox_forwarder.close()
+        if self.broker_profiles:
+            self.broker_profiles.close()
         if self.capture_websocket:
             self.capture_websocket.close()
         self.stop()
         self.bridge.journal.close()
         self.native_store.close()
+        self.relay_logs.close()
+        self.logging_events.close()
 
     def receive(self, payload):
         with self.lock:
@@ -381,6 +393,8 @@ class DashboardController:
             return {
                 "mode": "copying" if self.native.armed else "capture",
                 "version": VERSION,
+                "relay_logs": self.relay_logs.status(),
+                "tradingbox_forwarding": self.tradingbox_forwarder.status() if self.tradingbox_forwarder else {"enabled": False, "live": False},
                 "capture_websocket": self.capture_websocket.status() if self.capture_websocket else {"listening": False},
                 "event_schema_version": EVENT_SCHEMA_VERSION,
                 "mapping_schema_version": MAPPING_SCHEMA_VERSION,

@@ -16,6 +16,7 @@ from uuid import uuid4
 from .event import CaptureEvent
 from .mapping import MappingLedger
 from .meaning import meaning
+from .raw_log import RawLog
 
 
 class CaptureStore:
@@ -24,6 +25,7 @@ class CaptureStore:
             raise ValueError("CSV limit must be between 1 and 100000")
         directory.mkdir(parents=True, exist_ok=True)
         self.csv_path = directory / "trades.csv"
+        self.raw_log = RawLog()
         self.limit = limit
         self.lock = RLock()
         self.changed = Condition(self.lock)
@@ -304,6 +306,7 @@ class CaptureStore:
                 self.export_error = True
 
     def close(self):
+        self.raw_log.close()
         if self.export_worker:
             self.export_stop.set()
             self.export_dirty.set()

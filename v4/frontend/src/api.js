@@ -8,9 +8,9 @@ async function ensureSession() {
   }
 }
 
-export async function openEventStream(signal) {
+export async function openEventStream(signal, path = 'capture/stream') {
   await ensureSession()
-  const response = await fetch('/api/capture/stream', {
+  const response = await fetch(`/api/${path}`, {
     headers: { 'X-Session-Token': sessionToken, Accept: 'text/event-stream' },
     cache: 'no-store', signal,
   })

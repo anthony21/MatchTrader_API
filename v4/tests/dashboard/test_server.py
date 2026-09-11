@@ -57,6 +57,8 @@ def call(server, path, method="GET", body=None, headers=None):
 
 
 def test_session_and_assets_same_origin_only(server):
+    assert call(server, "/api/raw/stream")[0] == 401
+    assert call(server, "/api/raw/stream", headers={"Origin": "https://attacker.example"})[0] == 403
     assert call(server, "/")[0] == 200
     assert call(server, "/api/session")[0] == 200
     assert call(server, "/api/session", headers={"Host": "attacker.example:8765"})[0] == 403
@@ -65,13 +67,31 @@ def test_session_and_assets_same_origin_only(server):
     assert call(server, "/../data/private.db")[0] == 404
 
 
+def test_relay_ingress_is_durable_authenticated_and_never_routes_trades(server):
+    from tests.capture.test_relay_store import envelope
+
+    payload = envelope(b'{"kind":"ACCEPTED","action":"CREATE","unknown":true}\n')
+    assert call(server, '/relay/logs', 'POST', payload)[0] == 401
+    headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    assert call(server, '/relay/logs', 'POST', payload, {**headers, 'Origin': 'http://127.0.0.1:8765'})[0] == 401
+    status, body = call(server, '/relay/logs', 'POST', payload, headers)
+    assert status == 202 and json.loads(body)['durable']
+    status, body = call(server, '/relay/logs', 'POST', payload, headers)
+    assert status == 202 and json.loads(body)['duplicate']
+    assert server.controller.native_store.db.execute('SELECT count(*) FROM events').fetchone()[0] == 0
+    assert not server.controller.native.armed
+    assert call(server, '/api/relay/logs')[0] == 401
+    status, body = call(server, '/api/relay/logs', headers={'X-Session-Token': 'test-session'})
+    assert status == 200 and len(json.loads(body)['records']) == 1
+
+
 def test_mapping_endpoint_is_authenticated_and_account_scoped(server):
     assert call(server, '/api/trade-mappings')[0] == 401
     status, body = call(server, '/api/trade-mappings', headers={'X-Session-Token': 'test-session'})
     assert status == 200
     assert json.loads(body) == {'account_id': '123', 'mappings': []}
     _, raw = call(server, '/api/status', headers={'X-Session-Token': 'test-session'})
-    assert json.loads(raw)['version'] == '0.6.0'
+    assert json.loads(raw)['version'] == '0.8.2'
 
 
 def test_api_requires_session_and_can_start_stop(server):
@@ -182,3 +202,123 @@ def test_native_stream_is_authenticated_and_delivers_committed_changes(settings,
         actual.server_close()
         worker.join(timeout=3)
         controller.close()
+
+
+def test_logging_is_opaque_authenticated_and_never_routes(server, monkeypatch):
+    def forbidden(*a, **kw):
+        raise AssertionError('Logging must not route')
+    monkeypatch.setattr(server.controller, 'receive_native', forbidden)
+    body = {'kind': 'ACCEPTED', 'action': 'CREATE', 'source': 'X17', 'custom': [1, 2]}
+    assert call(server, '/logging/events', 'POST', body)[0] == 401
+    headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    status, response = call(server, '/logging/events', 'POST', body, headers)
+    ack = json.loads(response)
+    assert status == 202 and ack['durable'] and not ack['executed'] and not ack['forwarded']
+    assert not server.controller.running
+    status, page = call(server, '/api/logging/events', headers={'X-Session-Token': 'test-session'})
+    row = json.loads(page)['records'][0]
+    assert status == 200 and row['receipt_id'] == ack['receipt_id']
+    assert 'data_base64' not in row and 'custom' in row['preview']
+    assert call(server, '/api/logging/events')[0] == 401
+    assert call(server, '/api/logging/events?before=-1', headers={'X-Session-Token': 'test-session'})[0] == 400
+
+
+def test_broker_profile_actions_require_session_and_known_profile(server):
+    from matchtrader.dashboard.broker_profiles import BrokerProfiles
+    server.controller.broker_profiles = BrokerProfiles({'MTR': server.controller.settings}, server.controller)
+    assert call(server, '/api/broker-profiles')[0] == 401
+    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'MTR', 'action': 'connect'})[0] == 401
+    headers = {'X-Session-Token': 'test-session'}
+    status, body = call(server, '/api/broker-profiles', headers=headers)
+    assert status == 200 and json.loads(body)['profiles'][0]['profile'] == 'MTR'
+    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'missing', 'action': 'refresh'}, headers)[0] == 400
+    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'MTR', 'action': 'trade'}, headers)[0] == 400
+
+
+def test_tradingbox_gate_is_authenticated_and_separate_from_copying(server, tmp_path):
+    from matchtrader.capture.tradingbox_forwarder import TradingBoxForwarder
+    calls = []
+    def upstream(url, headers, body, **kwargs):
+        calls.append(body)
+        return 201, 'Created', [('Content-Type', 'application/json')], b'{"upstream":"accepted"}'
+    f = TradingBoxForwarder(tmp_path / 'forward.json', server.controller.logging_events, server.controller.native_store.raw_log, api_key='test-tb-key', send=upstream)
+    server.controller.tradingbox_forwarder = f
+    config = {'url': 'https://tradingbox.pro/api/hcamm/events', 'enabled': True, 'live': True}
+    assert call(server, '/api/tradingbox-forwarding', 'POST', config)[0] == 401
+    assert call(server, '/api/tradingbox-forwarding', headers={'X-Session-Token': 'test-session'})[0] == 200
+    assert call(server, '/api/hcamm/events', 'POST', {'intent': 1})[0] == 401
+    headers = {'X-HCAMM-Key': 'test-tb-key'}
+    assert call(server, '/api/hcamm/events', 'POST', {'intent': 1}, headers)[0] == 202
+    assert calls == []
+    assert call(server, '/api/tradingbox-forwarding', 'POST', config, {'X-Session-Token': 'test-session'})[0] == 200
+    status, response = call(server, '/api/hcamm/events', 'POST', {'intent': 2}, headers)
+    assert status == 201 and json.loads(response)['upstream'] == 'accepted'
+    assert len(calls) == 1 and not server.controller.native.armed
+    assert not server.controller.running
+    assert call(server, '/api/hcamm/events', 'POST', {}, {**headers, 'Origin': 'http://127.0.0.1:8765'})[0] == 401
+    assert server.controller.native_store.db.execute('SELECT count(*) FROM events').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'])
+def test_tradingbox_methods_queries_and_real_replies(server, tmp_path, method):
+    from matchtrader.capture.tradingbox_forwarder import TradingBoxForwarder
+    sent = []
+    def upstream(url, headers, body, *, method):
+        sent.append((method, url, headers, body))
+        return 200, 'OK', [('Content-Type', 'application/json'), ('X-Request-Id', 'tb-123'),
+                           ('Set-Cookie', 'one=1'), ('Set-Cookie', 'two=2'),
+                           ('Content-Length', '27')], b'{"commands":[{"id":"cmd1"}]}'
+    f = TradingBoxForwarder(tmp_path / 'f.json', server.controller.logging_events,
+        server.controller.native_store.raw_log, api_key='fake-key', send=upstream)
+    server.controller.tradingbox_forwarder = f
+    f.configure({'url': 'https://tradingbox.org/api/hcamm/events', 'enabled': True, 'live': True})
+    target = '/api/hcamm/commands?machineId=X17%20A&cursor=1&cursor=2&key=private'
+    body = b'{ "eventId": "original", "unknown": 0.05 }'
+    raw = (f'{method} {target} HTTP/1.1\r\nHost: localhost:8765\r\n'
+           f'X-HCAMM-Key: fake-key\r\nUser-Agent: Original-X17\r\nContent-Length: {len(body)}\r\n\r\n').encode() + body
+    sock = MemorySocket(raw)
+    Handler(sock, ('127.0.0.1', 1), server)
+    head, reply = sock.output.split(b'\r\n\r\n', 1)
+    assert b'200 OK' in head and b'X-Request-Id: tb-123' in head
+    assert head.count(b'Set-Cookie:') == 2 and b'Server:' not in head
+    assert reply == (b'' if method == 'HEAD' else b'{"commands":[{"id":"cmd1"}]}')
+    assert sent[0][:2] == (method, 'https://tradingbox.org' + target)
+    assert sent[0][3] == body and ('User-Agent', 'Original-X17') in sent[0][2]
+    rows = f.store.feed()['records']
+    assert rows[0]['metadata']['cycle_id'] == rows[1]['metadata']['cycle_id']
+    assert rows[1]['metadata']['method'] == method
+    assert rows[1]['metadata']['path'] == '/api/hcamm/commands'
+    assert 'private' not in json.dumps(rows)
+    assert call(server, target, method)[0] == 401
+    f.configure({'url': f.url, 'enabled': False, 'live': False})
+    assert call(server, target, method, headers={'X-HCAMM-Key': 'fake-key'})[0] == 202
+    assert len(sent) == 1
+
+
+def test_tradingbox_chunked_payload_and_ambiguous_framing(server, tmp_path):
+    from matchtrader.capture.tradingbox_forwarder import TradingBoxForwarder
+    sent = []
+    def upstream(url, headers, body, **kwargs):
+        sent.append(body)
+        return 204, 'No Content', [], b''
+    f = TradingBoxForwarder(tmp_path / 'f.json', server.controller.logging_events,
+        server.controller.native_store.raw_log, api_key='fake-key', send=upstream)
+    server.controller.tradingbox_forwarder = f
+    f.configure({'url': 'https://tradingbox.pro/api/hcamm/events', 'enabled': True, 'live': True})
+    base = b'POST /api/hcamm/events HTTP/1.1\r\nHost: localhost:8765\r\nX-HCAMM-Key: fake-key\r\n'
+    def exchange(framing, body):
+        sock = MemorySocket(base + framing + b'\r\n' + body)
+        Handler(sock, ('127.0.0.1', 1), server)
+        return sock.output
+    reply = exchange(b'Transfer-Encoding: chunked\r\n', b'3\r\nabc\r\n2;test=1\r\n\x00z\r\n0\r\n\r\n')
+    assert b'204 No Content' in reply and b'Content-Length:' not in reply
+    assert sent == [b'abc\x00z']
+    for headers, body in [
+        (b'Content-Length: 1\r\nTransfer-Encoding: chunked\r\n', b'a'),
+        (b'Content-Length: 1\r\nContent-Length: 1\r\n', b'a'),
+        (b'Transfer-Encoding: chunked\r\n', b'100001\r\n'),
+        (b'Transfer-Encoding: chunked\r\n', b'1\r\n'),
+        (b'Content-Length: 1048577\r\n', b''),
+    ]:
+        assert b'400 Bad Request' in exchange(headers, body)
+    assert len(sent) == 1
