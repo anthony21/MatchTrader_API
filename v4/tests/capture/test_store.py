@@ -1,10 +1,12 @@
 import csv
 import hashlib
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from matchtrader.capture import CaptureStore
+from matchtrader.models.position import Position
 
 
 def test_v3_event_replay_keeps_identity_after_optional_field_added(tmp_path, event):
@@ -125,3 +127,153 @@ def test_background_csv_does_not_block_journal_and_flushes_on_close(tmp_path, ev
         release.set()
         store.close()
     assert len(list(csv.DictReader(store.csv_path.open(encoding='utf-8-sig')))) == 2
+
+
+def test_observe_positions_persists_open_time_fields(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    position = Position(id='p1', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15',
+                        openTime='2024-01-01T00:00:00Z', openTimeMillis=1700000000000)
+    store.observe_positions(identity, 'demo', [position])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT open_time,open_time_millis FROM destination_observations "
+        "WHERE trade_id=? AND scope=? AND position_id='p1'", (identity, scope),
+    ).fetchone()
+    assert saved['open_time'] == '2024-01-01T00:00:00Z'
+    assert saved['open_time_millis'] == 1700000000000
+    store.close()
+
+
+def test_observe_positions_leaves_open_time_null_when_absent(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    position = Position(id='p2', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15')
+    store.observe_positions(identity, 'demo', [position])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT open_time,open_time_millis FROM destination_observations "
+        "WHERE trade_id=? AND scope=? AND position_id='p2'", (identity, scope),
+    ).fetchone()
+    assert saved['open_time'] is None
+    assert saved['open_time_millis'] is None
+    store.close()
+
+
+def test_observe_positions_normalizes_blank_open_time_and_keeps_millis(tmp_path, event):
+    # Position.openTime can arrive as '' rather than None. COALESCE('', open_time) returns ''
+    # and would erase a valid stored timestamp, so it must be normalized to None before SQL.
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    position = Position(id='p3', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15',
+                        openTime='', openTimeMillis=1700000000000)
+    store.observe_positions(identity, 'demo', [position])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT open_time,open_time_millis FROM destination_observations "
+        "WHERE trade_id=? AND scope=? AND position_id='p3'", (identity, scope),
+    ).fetchone()
+    assert saved['open_time'] is None
+    assert saved['open_time_millis'] == 1700000000000
+    store.close()
+
+
+def test_observe_positions_normalizes_whitespace_only_open_time_without_millis(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    position = Position(id='p4', symbol='EURUSD', side='BUY', volume='.01', openPrice='1.15', openTime='   ')
+    store.observe_positions(identity, 'demo', [position])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT open_time,open_time_millis FROM destination_observations "
+        "WHERE trade_id=? AND scope=? AND position_id='p4'", (identity, scope),
+    ).fetchone()
+    assert saved['open_time'] is None
+    assert saved['open_time_millis'] is None
+    store.close()
+
+
+def test_observe_closed_normalizes_blank_open_time(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    closed = SimpleNamespace(id='p5', symbol='EURUSD', side='BUY', volume=Decimal('.01'), openTime='',
+                             time='2024-01-02T00:00:00Z', closeReason='CLIENT')
+    store.observe_closed(identity, 'demo', [closed])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT open_time,open_time_millis FROM destination_observations "
+        "WHERE trade_id=? AND scope=? AND position_id='p5'", (identity, scope),
+    ).fetchone()
+    assert saved['open_time'] is None
+    assert saved['open_time_millis'] is None
+    store.close()
+
+
+def test_observe_closed_retains_every_partial_close_without_broker_execution_ids(tmp_path, event):
+    # uid and closingOrderID are both optional on ClosedTrade. Falling back to the position id
+    # alone collapsed every partial close onto one row and lost the earlier broker evidence.
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    closes = [
+        SimpleNamespace(id='p6', symbol='EURUSD', side='BUY', volume=Decimal('.4'),
+                        openTime='2024-01-01T00:00:00Z', time='2024-01-02T00:00:00Z', closeReason='CLIENT'),
+        SimpleNamespace(id='p6', symbol='EURUSD', side='BUY', volume=Decimal('.6'),
+                        openTime='2024-01-01T00:00:00Z', time='2024-01-03T00:00:00Z', closeReason='CLIENT'),
+    ]
+    store.observe_closed(identity, 'demo', closes)
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT volume FROM destination_observations WHERE trade_id=? AND scope=? "
+        "AND position_id='p6' AND reader='closed_positions'", (identity, scope),
+    ).fetchall()
+    assert len(saved) == 2
+    assert sum(Decimal(r['volume']) for r in saved) == Decimal('1.0')
+    store.close()
+
+
+def test_observe_closed_does_not_double_count_one_close_respelled(tmp_path, event):
+    # The broker may spell the same volume '0.5' on one read and '0.50' on the next. Keying the
+    # execution on the raw spelling counted one close twice and claimed a complete closure.
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    for volume in ('0.5', '0.50'):
+        closed = SimpleNamespace(id='p7', symbol='EURUSD', side='BUY', volume=Decimal(volume),
+                                 openTime='2024-01-01T00:00:00Z', time='2024-01-02T00:00:00Z',
+                                 closeReason='CLIENT')
+        store.observe_closed(identity, 'demo', [closed])
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT volume FROM destination_observations WHERE trade_id=? AND scope=? "
+        "AND position_id='p7' AND reader='closed_positions'", (identity, scope),
+    ).fetchall()
+    assert len(saved) == 1
+    assert sum(Decimal(r['volume']) for r in saved) == Decimal('0.5')
+    store.close()
+
+
+def test_observe_closed_keeps_different_sized_closes_at_one_timestamp(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    closes = [
+        SimpleNamespace(id='p8', symbol='EURUSD', side='BUY', volume=Decimal('.3'),
+                        openTime='2024-01-01T00:00:00Z', time='2024-01-02T00:00:00Z', closeReason='CLIENT'),
+        SimpleNamespace(id='p8', symbol='EURUSD', side='BUY', volume=Decimal('.7'),
+                        openTime='2024-01-01T00:00:00Z', time='2024-01-02T00:00:00Z', closeReason='CLIENT'),
+    ]
+    store.observe_closed(identity, 'demo', closes)
+    scope = store.mappings.destination_scope('demo')
+    saved = store.db.execute(
+        "SELECT volume FROM destination_observations WHERE trade_id=? AND scope=? "
+        "AND position_id='p8' AND reader='closed_positions'", (identity, scope),
+    ).fetchall()
+    assert len(saved) == 2
+    assert sum(Decimal(r['volume']) for r in saved) == Decimal('1.0')
+    store.close()

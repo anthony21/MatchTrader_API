@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from threading import Condition, Event, Lock, RLock, Thread
 from uuid import uuid4
@@ -17,6 +18,25 @@ from .event import CaptureEvent
 from .mapping import MappingLedger
 from .meaning import meaning
 from .raw_log import RawLog
+
+
+def _clean_broker_time(value):
+    """Blank/whitespace-only broker timestamps must never reach SQL: observe_destination's
+    COALESCE relies on NULL, not '', to mean "no value seen yet", or a real timestamp already
+    on record could be replaced by an empty string on a later, timestamp-less read-back."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _execution_quantity(volume):
+    """Normalize a quantity used to key a closing execution. The broker may spell the same
+    volume '0.5' on one read and '0.50' on the next; without normalizing, one close would be
+    keyed twice and its volume double-counted into a false complete-closure claim."""
+    try:
+        return str(Decimal(str(volume)).normalize())
+    except (ArithmeticError, TypeError, ValueError):
+        return str(volume)
 
 
 class CaptureStore:
@@ -226,6 +246,36 @@ class CaptureStore:
                 self.mappings.link(identity, 'destination', scope, 'position', position.id,
                                    'broker order/position relationship', now)
                 self.mappings.position('destination', scope, position.id, position.volume, now)
+                self.mappings.observe_destination(
+                    identity, scope, position.id, 'open_positions', execution_key=position.id,
+                    order_id=getattr(position, 'orderId', None), symbol=position.symbol, side=position.side,
+                    volume=position.volume, open_price=position.openPrice,
+                    open_time=_clean_broker_time(position.openTime),
+                    open_time_millis=position.openTimeMillis, close_time=None, close_reason=None, at=now,
+                )
+
+    def observe_closed(self, identity, destination, trades):
+        with self.lock, self.db:
+            scope = self.mappings.destination_scope(destination)
+            now = datetime.now(UTC).isoformat()
+            for closed in trades:
+                # order_id here is closingOrderID, not the opening orderId observe_positions above
+                # stores under the same column; the two readers give the column different meanings.
+                # execution_key discriminates each closing execution against the same position so
+                # multiple partial closes are retained and their volumes can be summed. Both broker
+                # execution IDs are optional, so the last resort composes the close time and volume:
+                # the position id alone would collapse every partial close onto one row.
+                stamp = getattr(closed, 'time', '') or ''
+                execution_key = (getattr(closed, 'uid', None) or getattr(closed, 'closingOrderID', None)
+                                 or f'{closed.id}@{stamp}:{_execution_quantity(closed.volume)}')
+                self.mappings.observe_destination(
+                    identity, scope, closed.id, 'closed_positions', execution_key=execution_key,
+                    order_id=getattr(closed, 'closingOrderID', None), symbol=closed.symbol, side=closed.side,
+                    volume=closed.volume, open_price=getattr(closed, 'openPrice', None),
+                    open_time=_clean_broker_time(getattr(closed, 'openTime', None)), open_time_millis=None,
+                    close_time=getattr(closed, 'time', None),
+                    close_reason=getattr(closed, 'closeReason', None), at=now,
+                )
 
     def decision(self, seq, status, reason):
         with self.lock, self.db:

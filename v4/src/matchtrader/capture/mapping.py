@@ -14,6 +14,10 @@ class MappingLedger:
     def __init__(self, db, broker):
         self.db = db
         self.broker = broker
+        # DDL runs before the version check below (pre-existing ordering, unchanged by this
+        # change): a future-version journal gets these CREATE TABLE IF NOT EXISTS statements
+        # before ValueError is raised. Harmless - it creates no data and mislabels no version -
+        # and restructuring init to check first would risk the working migration path for no gain.
         db.executescript("""
             CREATE TABLE IF NOT EXISTS mapping_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS identity_links (
@@ -37,10 +41,41 @@ class MappingLedger:
                 request_id TEXT, action TEXT, request TEXT, outcome TEXT,
                 broker_order_id TEXT, broker_position_id TEXT, updated_at TEXT,
                 PRIMARY KEY(trade_id,action_key));
+            CREATE TABLE IF NOT EXISTS destination_observations (
+                trade_id TEXT, scope TEXT, position_id TEXT, reader TEXT,
+                -- execution_key discriminates multiple closing executions against the same
+                -- position (ClosedTrade.uid, else closingOrderID, else the position id) so
+                -- partial closes are retained as separate rows instead of overwriting each
+                -- other; open_positions rows use the position id, so their behaviour (one
+                -- row per position) is unchanged.
+                execution_key TEXT,
+                -- order_id is dual-meaning by reader: the open_positions reader stores the
+                -- opening orderId; the closed_positions reader stores closingOrderID instead.
+                order_id TEXT, symbol TEXT, side TEXT, volume TEXT, open_price TEXT,
+                open_time TEXT, open_time_millis INTEGER, close_time TEXT, close_reason TEXT,
+                first_seen_at TEXT, updated_at TEXT,
+                PRIMARY KEY(trade_id,scope,position_id,reader,execution_key));
+            CREATE TABLE IF NOT EXISTS outcome_reasons (
+                trade_id TEXT, action_key TEXT, attempt INTEGER, origin TEXT, outcome TEXT,
+                code TEXT, summary TEXT, evidence TEXT, at TEXT,
+                PRIMARY KEY(trade_id,action_key,attempt));
+            CREATE TABLE IF NOT EXISTS paper_sends (
+                trade_id TEXT, source TEXT, destination TEXT, request TEXT, lots TEXT,
+                verdict TEXT, reason TEXT, decided_at TEXT,
+                PRIMARY KEY(trade_id,decided_at));
+            CREATE TABLE IF NOT EXISTS pamm_publications (
+                trade_id TEXT, published_at TEXT, upstream_status INTEGER,
+                duration_ms REAL, error_class TEXT,
+                PRIMARY KEY(trade_id,published_at));
         """)
         with db:
+            # Forward-only: a 1.0.0 journal already has the tables above (CREATE ... IF NOT EXISTS
+            # above ran first), so it only needs the version bumped in place; anything else is refused.
             version = db.execute("SELECT value FROM mapping_meta WHERE key='schema_version'").fetchone()
-            if version and version[0] != MAPPING_SCHEMA_VERSION:
+            if version and version[0] == '1.0.0':
+                db.execute("UPDATE mapping_meta SET value=? WHERE key='schema_version'",
+                           (MAPPING_SCHEMA_VERSION,))
+            elif version and version[0] != MAPPING_SCHEMA_VERSION:
                 raise ValueError("Unsupported mapping journal schema version")
             old = db.execute("SELECT value FROM mapping_meta WHERE key='broker'").fetchone()
             if old and old[0] != broker:
@@ -144,6 +179,44 @@ class MappingLedger:
             (side, scope, position, str(volume), at),
         )
 
+    def observe_destination(self, trade, scope, position, reader, *, order_id, symbol, side, volume,
+                             open_price, open_time, open_time_millis, close_time, close_reason, at,
+                             execution_key=None):
+        # This is the ledger boundary: a blank/whitespace-only open_time must never reach SQL as
+        # if it were a value. store._clean_broker_time normalizes the same way at its one caller
+        # (documentation of intent there), but the guarantee lives here, because any direct
+        # ledger call (bypassing that caller) must not be able to plant '' and permanently block
+        # a later genuine timestamp via the COALESCE below, nor let '   ' verify as a broker time.
+        if isinstance(open_time, str) and not open_time.strip():
+            open_time = None
+        # open_positions rows keep one row per position (execution_key defaults to position_id,
+        # preserving prior behaviour); closed_positions rows pass a per-execution discriminator
+        # so multiple partial closes against one position are retained as separate rows.
+        execution_key = position if execution_key is None else execution_key
+        # Mutable snapshot fields are guarded: an update older than what is on record is dropped
+        # whole, so a local clock rollback cannot apply a stale volume/close over a fresher one.
+        self.db.execute(
+            "INSERT INTO destination_observations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trade_id,scope,position_id,reader,execution_key) DO UPDATE SET "
+            "order_id=excluded.order_id,symbol=excluded.symbol,side=excluded.side,volume=excluded.volume,"
+            "open_price=excluded.open_price,close_time=excluded.close_time,"
+            "close_reason=excluded.close_reason,updated_at=excluded.updated_at "
+            "WHERE excluded.updated_at>=destination_observations.updated_at",
+            (trade, scope, position, reader, execution_key, order_id, symbol, side,
+             str(volume) if volume is not None else None,
+             str(open_price) if open_price is not None else None, open_time, open_time_millis, close_time,
+             close_reason, at, at),
+        )
+        # Broker time evidence is applied separately and unguarded: COALESCE keeps whichever
+        # value is already on record, so this can only fill a still-empty column and a clock
+        # rollback (NTP correction, VM time sync) can never discard a timestamp once recorded.
+        self.db.execute(
+            "UPDATE destination_observations SET open_time=COALESCE(open_time,?),"
+            "open_time_millis=COALESCE(open_time_millis,?) "
+            "WHERE trade_id=? AND scope=? AND position_id=? AND reader=? AND execution_key=?",
+            (open_time, open_time_millis, trade, scope, position, reader, execution_key),
+        )
+
     def guard_position(self, trade):
         for side in ('source', 'destination'):
             links = self.db.execute(
@@ -163,6 +236,8 @@ class MappingLedger:
             "SELECT * FROM execution_fills WHERE trade_id=? ORDER BY emitted_at,execution_id", (identity,))]
         quantities = [dict(r) for r in self.db.execute(
             "SELECT * FROM quantity_observations WHERE trade_id=?", (identity,))]
+        destination_observations = [dict(r) for r in self.db.execute(
+            "SELECT * FROM destination_observations WHERE trade_id=? ORDER BY first_seen_at", (identity,))]
         for q in quantities:
             known = [f for f in fills if f['side'] == q['side'] and f['scope'] == q['scope']]
             for effect in ('OPEN', 'CLOSE'):
@@ -211,4 +286,5 @@ class MappingLedger:
                 'symbol': trade.get('symbol', ''), 'side': trade.get('side', ''), 'source': trade.get('source', 'UNKNOWN'),
                 'account_id': trade['destination'], 'state': trade['state'], 'mapping_status': status,
                 'reasons': reasons, 'links': links, 'fills': fills, 'quantities': quantities,
-                'actions': actions, 'updated_at': trade['updated_at']}
+                'actions': actions, 'destination_observations': destination_observations,
+                'updated_at': trade['updated_at']}

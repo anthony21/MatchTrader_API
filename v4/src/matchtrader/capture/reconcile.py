@@ -52,6 +52,9 @@ def reconcile(store, api, destination, positions):
             for p in history
             if p.id == trade["broker_position_id"] and p.symbol == trade["symbol"] and p.side == trade["side"]
         ]
+        if matches:
+            # Even a partial close is real evidence the broker saw this position; record it either way.
+            store.observe_closed(trade["trade_id"], destination, matches)
         # A partial close alone does not resolve the trade. No price/time-only joins.
         if matches and sum((p.volume for p in matches), Decimal(0)) >= Decimal(trade["lots"]):
             store.update(trade["trade_id"], state="resolved", resolved_at=now.isoformat())
