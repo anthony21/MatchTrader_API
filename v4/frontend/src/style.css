@@ -8,6 +8,7 @@ main{margin-left:218px;max-width:1800px;width:calc(100% - 218px);padding:42px 38
 :root { --settings-gap: 16px; }
 @media(max-width:720px){header{flex-wrap:wrap}.mode-pill{white-space:normal;max-width:100%}}
 .copy-settings { padding: 24px; }
+.copy-settings fieldset{min-width:0}
 .copy-settings fieldset { border: 1px solid #dbe4ea; border-radius: 10px; padding: 20px; margin: 20px 0; }
 .copy-settings label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
 .copy-settings input, .copy-settings select { min-width: 0; padding: 10px; }

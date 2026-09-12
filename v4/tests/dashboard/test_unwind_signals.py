@@ -1,9 +1,4 @@
-"""The owner's asymmetric rule, end to end through the dashboard controller and the relay's HTTP path.
-
-Opening is manual: an intent signal opens nothing and a trade reaches the broker only through
-send_trade. Unwinding is automatic: a cancelled/closed signal for a trade the owner sent live
-cancels the resting order or closes the position at once, whatever the copy controls or the
-signal-copy switch say now, exactly once, and never for a paper send."""
+"""Pending cancellation follows Live/Paper; lifecycle closes never close filled positions."""
 
 import json
 from datetime import UTC, datetime
@@ -120,7 +115,7 @@ def ledger_row(controller):
     {"mode": "paper", "sources": {"X17": True}},   # the master switch back on paper
     {"mode": "paper", "sources": {}},              # both
 ])
-def test_a_cancel_signal_cancels_the_sent_order_whatever_the_copy_controls_say_now(controller, after):
+def test_cancel_signal_obeys_paper_live_without_a_second_source_gate(controller, after):
     api = controller.api
     trade_id = controller.receive_native(labelled_event().model_dump())["trade_id"]
     # An intent for this lifecycle arriving through the signal path opens nothing: sends are explicit.
@@ -133,6 +128,10 @@ def test_a_cancel_signal_cancels_the_sent_order_whatever_the_copy_controls_say_n
     controller.configure_copy_controls(after)
     assert controller.signal_copy.armed is False
     result = controller.receive_signals([lifecycle("cancelled", "cancel-1")])["results"][0]
+    if after['mode'] == 'paper':
+        assert result['status'] == 'captured'
+        assert [name for name, _ in api.writes] == ['CREATE']
+        return
     assert result["status"] == "accepted" and result["copy_request"]["id"] == "aqua-1"
     assert [name for name, _ in api.writes] == ["CREATE", "CANCEL"]
     assert controller.native_store.trade(trade_id)["state"] == "resolved"
@@ -150,7 +149,7 @@ def test_a_cancel_signal_cancels_the_sent_order_whatever_the_copy_controls_say_n
     assert len(api.writes) == 2
 
 
-def test_a_closed_signal_closes_the_sent_position_with_the_source_off_and_mode_paper(controller):
+def test_a_closed_signal_leaves_the_filled_position_alone(controller):
     api = controller.api
     trade_id = controller.receive_native(labelled_event(order_type="MARKET").model_dump())["trade_id"]
     controller.configure_copy_controls({"mode": "live", "sources": {"X17": True}})
@@ -158,16 +157,12 @@ def test_a_closed_signal_closes_the_sent_position_with_the_source_off_and_mode_p
     controller.configure_copy_controls({"mode": "paper", "sources": {}})
     closed = lifecycle("closed", "closed-1", detail="res win=1")
     result = controller.receive_signals([closed])["results"][0]
-    assert result["status"] == "accepted"
-    assert [name for name, _ in api.writes] == ["MARKET", "CLOSE"]
-    assert api.writes[1][1]["positionId"] == "aqua-p1"
-    row = ledger_row(controller)
-    assert row["unwind"]["action"] == "CLOSE" and row["unwind"]["outcome"] == "accepted"
-    # The pre-close position read verifies opening, not closing. The write alone cannot prove closure.
-    assert row['state'] == 'verified_open' and row['verified'] is True
-    # Redelivery of the identical signal is deduplicated; the broker is not asked twice.
-    again = controller.receive_signals([closed])["results"][0]
-    assert again["duplicate"] and len(api.writes) == 2
+    assert result['status'] == 'captured'
+    assert [name for name, _ in api.writes] == ['MARKET']
+    assert len(api.positions) == 1
+    assert ledger_row(controller)['unwind'] is None
+    again = controller.receive_signals([closed])['results'][0]
+    assert again['duplicate'] and len(api.writes) == 1
 
 
 def test_failure_after_an_unwind_write_is_not_reported_as_never_sent(controller, monkeypatch):
@@ -194,12 +189,11 @@ def test_a_paper_send_is_never_unwound_at_the_broker(controller):
     try:
         for kind in ("cancelled", "closed"):
             result = controller.receive_signals([lifecycle(kind, "end-" + kind)])["results"][0]
-            assert result["status"] == "held" and "paper mode only" in result["reason"]
+            assert result["status"] == "captured"
         trade = controller.native_store.trade(trade_id)
         assert trade["state"] == "observed" and trade["broker_order_id"] == "" and trade["destination"] == ""
         row = ledger_row(controller)
-        assert row["state"] == "paper_sent" and row["unwind"]["outcome"] == "held"
-        assert row["unwind"]["origin"] == "local" and "paper mode only" in row["unwind"]["summary"]
+        assert row["state"] == "paper_sent" and row["unwind"] is None
     finally:
         controller.api = None
 
@@ -233,7 +227,7 @@ def test_an_uncertain_unwind_is_never_retried_across_a_restart(settings, tmp_pat
     try:
         for event_id in ("cancel-1", "cancel-2"):
             again = second.receive_signals([lifecycle("cancelled", event_id)])["results"][0]
-            assert again["status"] in {"uncertain", "held"}
+            assert again["status"] == ('held' if event_id == 'cancel-1' else 'captured')
         assert [name for name, _ in second.api.writes] == []
         assert second.native_store.trade(trade_id)["state"] == "uncertain"
     finally:
@@ -242,7 +236,7 @@ def test_an_uncertain_unwind_is_never_retried_across_a_restart(settings, tmp_pat
 
 def test_a_cancel_signal_over_the_wire_cancels_the_sent_order_without_any_click(server):
     """The relay's own path: POST /capture/signals with the bridge token. The owner sent the trade
-    live from the Verified trades page, switched everything back to paper/off, and X17 then
+    live from the Verified trades page, left the master in Live with source controls off, and X17 then
     reported the lifecycle cancelled: the resting order is cancelled at once, exactly once."""
     controller = server.controller
     controller.settings = controller.settings.model_copy(update={"enable_writes": True})
@@ -259,7 +253,7 @@ def test_a_cancel_signal_over_the_wire_cancels_the_sent_order_without_any_click(
         call(server, "/api/copy-controls", "POST", {"mode": "live", "sources": {"X17": True}}, session)
         status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_id, "volume": "0.02"}, session)
         assert status == 200 and json.loads(body)["broker_order_id"] == "aqua-1"
-        call(server, "/api/copy-controls", "POST", {"mode": "paper", "sources": {}}, session)
+        call(server, "/api/copy-controls", "POST", {"mode": "live", "sources": {}}, session)
         cancel = lifecycle("cancelled", "cancel-1")
         # A browser can never deliver a signal; only the authenticated relay can.
         assert call(server, "/capture/signals", "POST", [cancel], {**sender, "Origin": "http://127.0.0.1:8765"})[0] == 401

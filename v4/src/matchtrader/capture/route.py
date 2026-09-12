@@ -11,6 +11,7 @@ class SymbolRoute(BaseModel):
     destination: str = Field(min_length=1)
     quantity_multiplier: Decimal = Field(gt=0)
     max_lots: Decimal = Field(gt=0)
+    fixed_lots: Decimal | None = Field(default=None, gt=0)
     # Prices are copied only for explicitly confirmed equivalent instruments.
     same_price_scale: Literal[True]
 

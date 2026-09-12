@@ -104,15 +104,14 @@ test('paper rows never appear in the verified ledger and the empty state is hone
   empty.unmount()
 })
 
-test('the send control appears only on candidate rows and is disabled when the source is off', () => {
+test('trade records have no per-trade Send requirement', () => {
   const wrapper = mount(VerifiedTrades, { props: { rows: [
     row({ trade_id: 'on', state: 'candidate', source_enabled: true }),
     row({ trade_id: 'off', state: 'candidate', source_enabled: false }),
     row({ trade_id: 'done', state: 'verified_open', source_enabled: true }),
   ] } })
-  expect(rowOf(wrapper, 'on').find('button').element.disabled).toBe(false)
-  expect(rowOf(wrapper, 'off').find('button').element.disabled).toBe(true)
-  expect(rowOf(wrapper, 'off').text()).toContain('Source X17 is off in copy controls.')
+  expect(rowOf(wrapper, 'on').find('button').exists()).toBe(false)
+  expect(rowOf(wrapper, 'off').find('button').exists()).toBe(false)
   expect(rowOf(wrapper, 'done').find('button').exists()).toBe(false)
   expect(request).not.toHaveBeenCalled()
   wrapper.unmount()

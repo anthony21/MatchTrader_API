@@ -84,7 +84,7 @@ class Refusal(ValueError):
         self.code = code
 
 
-def apply(store, signal, api, destination, verified):
+def apply(store, signal, api, destination, verified, *, trade_id=None):
     """Act on one cancel/closed signal against the ledger.
 
     Returns None when no sent trade is linked to the signal's lifecycle - the caller records
@@ -94,7 +94,8 @@ def apply(store, signal, api, destination, verified):
     exact request and the broker response when there was one."""
     action = "CANCEL" if signal.kind in CANCEL_KINDS else "CLOSE"
     correlation = f"{signal.kind} signal {signal.machineId}:{signal.clientEventId} for lifecycle {signal.label!r}"
-    matches = linked_trades(store, signal.machineId, signal.label)
+    matches = ([store.trade(trade_id)] if trade_id else linked_trades(store, signal.machineId, signal.label))
+    matches = [trade for trade in matches if trade]
     if not matches:
         return None
     action_key = f"{action}:signal:{signal.clientEventId}"

@@ -14,11 +14,13 @@ test('loads persisted route and saves P01 settings without enabling copying', as
   const wrapper = mount(CopySettings, { props: { state: { account_id: 'demo', accounts: [{ id: 'demo' }] } } })
   await flushPromises()
   expect(wrapper.find('select[aria-label="Detected Quantower account"]').element.value).toBe('0')
+  await wrapper.findAll('label').find(label => label.text() === 'Lot size').find('input').setValue('0.02')
   await wrapper.find('form').trigger('submit')
   await flushPromises()
-  expect(request).toHaveBeenLastCalledWith('copy-settings', { route: saved.route, csv_limit: 1000 })
+  expect(request).toHaveBeenLastCalledWith('copy-settings', { route: { ...saved.route, symbols: {
+    'EUR/USD': { ...saved.route.symbols['EUR/USD'], fixed_lots: 0.02, max_lots: 0.02 },
+  } }, csv_limit: 1000 })
   expect(wrapper.text()).toContain('Settings saved')
-  expect(wrapper.text()).toContain('Nothing is sent automatically')
   expect(wrapper.emitted('saved')).toHaveLength(1)
   // Saving a route is not enabling copying, and the page no longer points at a legacy toggle.
   expect(request).not.toHaveBeenCalledWith('copying', expect.anything())

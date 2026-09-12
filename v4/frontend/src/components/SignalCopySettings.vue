@@ -40,7 +40,7 @@ async function save() {
     if (new Set(rows.value.map(row => row.source.trim())).size !== rows.value.length) throw Error('Source symbols must be unique.')
     const symbols = Object.fromEntries(rows.value.map(({ source, ...value }) => [source.trim(), { ...value, same_price_scale: true, destination: value.destination.trim() }]))
     await request('signal-copy-settings', { ...config.value, exclusive_destination: true, machine_id: config.value.machine_id.trim(), source: config.value.source.trim(), connection_name: config.value.connection_name.trim(), symbols })
-    message.value = 'Copy settings saved. Use the account Live control when ready.'
+    message.value = 'Settings saved.'
     emit('saved')
   } catch (err) { error.value = err.message }
   finally { busy.value = false }
@@ -49,19 +49,19 @@ async function save() {
 
 <template>
   <section class="card signal-settings" aria-label="Signal copy settings">
-    <h2>Copy settings</h2>
-    <p>Choose the source, destination, symbol mapping and lots per trade. Copies use the destination account's existing login.</p>
-    <p v-if="live">Turn Live off in the account controls before changing settings.</p>
+    <h2>Strategy signal mapping</h2>
+    
+    
     <form @submit.prevent="save">
       <fieldset :disabled="busy || live || state?.copying">
         <legend>Signal source and destination</legend>
         <button type="button" @click="selectX17P01">Use X17 + manual P01 at logged entry</button>
         <label class="check"><input type="checkbox" :checked="config.additional_sources?.includes('panel')" @change="config.additional_sources = $event.target.checked ? ['panel'] : []" />Also accept structured P01 panel signals</label>
         <label class="check"><input v-model="config.x17_only" type="checkbox" />Require X17 attribution for chain intents</label>
-        <p>Intervals remain separate when tracking orders. A blank chart filter accepts all intervals; P01 panel signals use their own labels.</p>
-        <p class="unwind-rule">A cancel or closed signal always acts on a trade you already sent: the resting order is cancelled or the open position closed at once, whatever these switches or the copy controls say. Cancellation never closes a filled position. Nothing is ever opened automatically.</p>
+        
+        
         <label class="check"><input v-model="config.p01_log_enabled" type="checkbox" @change="selectP01" />Copy P01 chart intents from the local log</label>
-        <p v-if="config.p01_log_enabled">Start capture to read P01 chart intents. Copies keep the source Limit or Stop type and use your lot size.</p>
+        
         <div class="settings-grid">
           <label>Signal machine ID<input v-model="config.machine_id" required placeholder="machineId from the request" /></label>
           <label>Signal source<input v-model="config.source" required /></label>
@@ -75,11 +75,11 @@ async function save() {
           <label>Signal symbol<input v-model="row.source" required placeholder="US TECH 100" /></label>
           <label>Destination symbol<input v-model="row.destination" required /></label>
           <label>Copy volume (lots)<input v-model="row.fixed_lots" type="number" min="0.00000001" step="any" required /></label>
-          <details><summary>Order handling</summary><label>Copy order type<select v-model="row.order_type" required><option value="">Choose explicitly</option><option value="ENTRY">Pending at logged entry (source type or broker quote)</option><option value="SOURCE">Use source order type</option><option value="MARKET">Market - current price</option><option value="LIMIT">Limit - signal entry</option><option value="STOP">Stop - signal entry</option></select></label><p>Keep the source order type, or preserve an existing explicit override. Pending at logged entry uses a fresh broker quote to choose Limit/Stop when the source type is blank; prices and source volume are unchanged.</p></details>
+          <details><summary>Order handling</summary><label>Copy order type<select v-model="row.order_type" required><option value="">Choose explicitly</option><option value="ENTRY">Pending at logged entry (source type or broker quote)</option><option value="SOURCE">Use source order type</option><option value="MARKET">Market - current price</option><option value="LIMIT">Limit - signal entry</option><option value="STOP">Stop - signal entry</option></select></label></details>
           <button type="button" :disabled="rows.length === 1" @click="rows.splice(index, 1)">Remove signal symbol</button>
         </div>
         <button type="button" @click="rows.push({ source: '', destination: '', fixed_lots: '', order_type: config.additional_sources?.includes('panel') ? 'ENTRY' : 'SOURCE', same_price_scale: true })">Add signal symbol</button>
-        <p>Entry, stop and target come from the intent. Market orders use the current execution price; limit and stop orders use the signal entry. Destination lot limits are checked before submission.</p>
+        
         <button type="submit" class="primary">Save copy settings</button>
       </fieldset>
     </form>

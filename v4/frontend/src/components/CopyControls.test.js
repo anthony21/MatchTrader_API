@@ -7,36 +7,24 @@ afterEach(() => { vi.clearAllMocks(); vi.useRealTimers() })
 
 const pushed = { mode: 'paper', sources: { P01: true, X17: false, MANUAL: false } }
 const master = wrapper => wrapper.find('button.master')
-const box = (wrapper, code) => wrapper.find(`input[aria-label="Copy ${code}"]`)
 
 test('an absent section renders the safe reading, disabled, and fetches nothing', async () => {
   vi.useFakeTimers()
   const wrapper = mount(CopyControls)
   await vi.advanceTimersByTimeAsync(30000)
   expect(request).not.toHaveBeenCalled()
-  for (const code of ['P01', 'X17', 'MANUAL']) {
-    expect(box(wrapper, code).element.checked).toBe(false)
-    expect(box(wrapper, code).element.disabled).toBe(true)
-  }
+  expect(wrapper.findAll('input')).toHaveLength(0)
   expect(master(wrapper).element.disabled).toBe(true)
   expect(wrapper.classes()).not.toContain('live')
   wrapper.unmount()
 })
 
-test('a pushed section is applied without a fetch and a source toggle posts the whole desired state', async () => {
-  request.mockResolvedValue({ mode: 'paper', sources: { P01: true, X17: true, MANUAL: false } })
+test('pushed mode updates the one switch without fetching or extra source switches', async () => {
   const wrapper = mount(CopyControls, { props: { pushed } })
   expect(request).not.toHaveBeenCalled()
-  expect(box(wrapper, 'P01').element.checked).toBe(true)
-  expect(box(wrapper, 'X17').element.checked).toBe(false)
-  await box(wrapper, 'X17').setValue(true)
-  await flushPromises()
-  expect(request).toHaveBeenCalledTimes(1)
-  expect(request).toHaveBeenCalledWith('copy-controls', { mode: 'paper', sources: { P01: true, X17: true, MANUAL: false } })
-  expect(box(wrapper, 'X17').element.checked).toBe(true)
-  await wrapper.setProps({ pushed: { mode: 'paper', sources: { P01: false, X17: true, MANUAL: true } } })
-  expect(box(wrapper, 'P01').element.checked).toBe(false)
-  expect(box(wrapper, 'MANUAL').element.checked).toBe(true)
+  expect(wrapper.findAll('input')).toHaveLength(0)
+  await wrapper.setProps({ pushed: { ...pushed, mode: 'live' } })
+  expect(master(wrapper).text()).toBe('Live')
   wrapper.unmount()
 })
 

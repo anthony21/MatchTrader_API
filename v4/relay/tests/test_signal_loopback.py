@@ -69,7 +69,8 @@ def test_local_receipt_opens_one_fake_copy_with_configured_volume_and_no_tb_call
             },
         }
     )
-    controller.set_signal_copying(True)
+    controller.start_capture()
+    controller.configure_copy_controls({'mode': 'live'})
     assets = tmp_path / "assets"
     assets.mkdir()
     token = "test-local-token-with-at-least-32-characters"

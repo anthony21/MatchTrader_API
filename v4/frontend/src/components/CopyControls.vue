@@ -20,7 +20,6 @@ async function post(next) {
   } catch (err) { error.value = err?.message || 'Copy controls could not be saved and the local API returned no message.' }
   finally { busy.value = false }
 }
-const setSource = (code, enabled) => post({ mode: current.value.mode, sources: { ...current.value.sources, [code]: enabled } })
 function toggleMode() {
   return post({ mode: live.value ? 'paper' : 'live', sources: { ...current.value.sources } })
 }
@@ -30,10 +29,7 @@ function toggleMode() {
   <section class="card copy-controls-panel" :class="{ live }" aria-label="Copy controls">
     <div class="section-heading"><h2>Broker orders</h2></div>
     <div class="controls-row">
-      <label v-for="code in SOURCES" :key="code" class="source-switch">
-        <input type="checkbox" :checked="current.sources[code]" :disabled="busy || !reported" :aria-label="`Copy ${code}`" @change="setSource(code, $event.target.checked)" />
-        {{ code }} <span class="subtext">{{ current.sources[code] ? 'on' : 'off' }}</span>
-      </label>
+
       <span class="control-divider"></span>
       <button type="button" class="master" :class="{ live }" role="switch" aria-label="Live or Paper" :aria-checked="live" :disabled="busy || !reported" @click="toggleMode">{{ live ? 'Live' : 'Paper' }}</button>
     </div>

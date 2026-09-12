@@ -1,11 +1,8 @@
-"""Persisted copy controls: one Paper/Live master switch plus a per-source enable.
+"""One persisted Paper/Live mode for incoming bridge orders.
 
-The default is the safe state - paper mode with every source off - and it is what a
-missing file resolves to; an unreadable one raises rather than guessing at it. Enabling
-a source only makes that source's captured trades *eligible*, visible as candidates; it
-never sends anything. A trade reaches the broker solely through an explicit send action,
-and only while the master switch is on live. Paper records the exact broker request and
-sends nothing. Live never survives a restart: the mode is reset to paper on every load.
+The route selects sources and symbol/volume mappings. Legacy source flags remain
+readable for existing clients; automatic dispatch needs no second arming switch.
+Restart always returns to Paper and previously recorded requests are never replayed.
 """
 
 from pathlib import Path

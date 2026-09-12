@@ -1,17 +1,8 @@
-"""Explicit, owner-initiated dispatch of one captured candidate; nothing here runs on arrival.
+"""Shared one-time order submission for automatic bridge dispatch and legacy Send clients.
 
-A captured signal is only ever a candidate. It reaches the broker through send() alone,
-called from the front end's send action, and only while the copy controls are on live
-with the trade's source enabled. Paper mode writes the exact request that would have gone
-and stops before any broker contact: the paper path never touches `api` at all, so it can
-never produce a broker identity or a destination_observations row - the only evidence
-classify() will count - and a paper send is therefore incapable of reading as verified.
-
-The volume is the one editable field. Everything else - instrument, side, order type,
-entry and brackets - comes from the captured ACCEPTED CREATE signal. A trade is sent at
-most once: a paper record or a durable attempt for the trade refuses every later send in
-either mode, and the live path commits its attempt (claim) before the broker write, so a
-crash leaves it uncertain and never retryable, exactly as the armed router does.
+Paper records the formatted request without touching the broker. Live commits the
+attempt before posting and retains uncertain results without retry. Symbol, side,
+order type and prices come from the captured event; the caller supplies the lots.
 """
 
 import json
@@ -159,7 +150,9 @@ def _live(store, prepared, api, trade_id):
     event, request = prepared.event, prepared.request
     method = api.open_position if event.order_type == "MARKET" else api.create_pending_order
     try:
+        store.raw_log.append('out', 'broker-request', {'trade_id': trade_id, 'body': _json_safe(request)})
         result = method(**request)
+        store.raw_log.append('in', 'broker-response', {'trade_id': trade_id, 'body': result.model_dump(mode='json')})
         if result.status and result.status != "OK":
             raise _unverified("Unrecognized broker status")
         if not result.orderId and not result.positionId:

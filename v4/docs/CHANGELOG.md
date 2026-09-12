@@ -5,7 +5,22 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
-## Unreleased - automatic cancel and close for trades already sent
+## Unreleased - direct bridge orders
+
+Live now sends each fresh, matching bridge order through the connected broker's order
+API automatically, with the saved symbol and lot size. Paper records the request without
+broker contact. Cancel sends only a cancel for the exact pending broker order; fills are
+never closed by this flow. Edit and close events remain observations. Per-trade Send is
+removed from the trade table, and the source is selected once in the route rather than
+armed a second time. The TradingBox URL/Save/On-Off controls remain separate.
+
+Native orders and configured strategy signals share the Live/Paper switch. A matching
+lifecycle label already attempted on either ingress cannot open a second broker order.
+Old events, snapshots, duplicate identities and uncertain writes are never replayed.
+An application restart returns to Paper. No runtime service or live setting was enabled
+as part of this change.
+
+## Previous development - manual sends and automatic unwind
 
 Copy Settings now exposes the shared broker Live/Paper switch directly. TradingBox
 forwarding has just its destination URL, Save, and one On/Off switch; On enables

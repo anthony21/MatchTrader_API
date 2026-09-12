@@ -29,7 +29,6 @@ test('saves fixed volume separately from the live switch and disables editing wh
   expect(wrapper.text()).not.toContain('Enable live mode')
   await wrapper.setProps({ state: { accounts: [{ id: 'demo' }], signal_copying: true } })
   expect(wrapper.find('fieldset').element.disabled).toBe(true)
-  expect(wrapper.text()).toContain('Turn Live off')
   wrapper.unmount()
 })
 
@@ -43,8 +42,6 @@ test('X17 and manual P01 preset selects pending entry without arming; unwinding 
   expect(wrapper.findAll('select').some(select => select.element.value === 'ENTRY')).toBe(true)
   // The retired cancel_pending switch is gone: a cancel or closed signal always acts on a sent trade.
   expect(wrapper.findAll('label').some(label => label.text().includes('Forward cancellation'))).toBe(false)
-  expect(wrapper.text()).toContain('A cancel or closed signal always acts on a trade you already sent')
-  expect(wrapper.text()).toContain('Nothing is ever opened automatically')
   expect(wrapper.vm.config ?? {}).not.toHaveProperty('cancel_pending')
   expect(wrapper.findAll('label').find(label => label.text().includes('Also accept structured')).find('input').element.checked).toBe(true)
   expect(wrapper.findAll('label').find(label => label.text().includes('Copy P01 chart intents from the local log')).find('input').element.checked).toBe(false)

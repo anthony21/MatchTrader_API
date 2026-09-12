@@ -432,7 +432,7 @@ def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_
     controller.api = broker
     controller.connection = 'connected'
     controller.native.demo_verified = False
-    broker.connection = SimpleNamespace(account_id=controller.selected)
+    broker.connection = SimpleNamespace(account_id=controller.selected, session_expires_at=None)
     settings = config(destination_account=controller.selected)
     assert call(server, '/api/signal-copy-settings', 'POST', settings, headers)[0] == 200
     assert not controller.signal_copy.armed
@@ -440,6 +440,8 @@ def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_
     assert status == 200 and json.loads(raw)['live'] is False
     assert call(server, '/api/signal-copying', 'POST', {'enabled': True}, headers)[0] == 200
     assert controller.signal_copy.armed
+    controller.start_capture()
+    controller.configure_copy_controls({'mode': 'live'})
     relay_headers = {'Authorization': 'Bearer ' + server.bridge_token}
     assert call(server, '/relay/logs', 'POST', envelope(), relay_headers)[0] == 202
     assert not broker.calls

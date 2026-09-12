@@ -14,7 +14,7 @@ from time import monotonic
 from ..api import MatchTraderAPI
 from ..bridge.api import ShadowBridge
 from ..bridge.ledger import LedgerTail
-from ..capture import manual_send
+from ..capture import automatic, manual_send
 from ..capture.logging_store import LoggingStore
 from ..capture.meaning import meaning
 from ..capture.pamm_publisher import PammPublisher
@@ -100,6 +100,7 @@ class DashboardController:
         # launcher attaches it after construction.
         self.copy_controls_path = data_dir / "copy-controls.json"
         self.copy_controls = load_controls(self.copy_controls_path)
+        self.copy_mode_since = datetime.now(UTC)
         self.pamm = PammPublisher(self.native_store, lambda: self.tradingbox_forwarder)
         self.token_message = ""
         self.reconciliation_message = ""
@@ -296,6 +297,8 @@ class DashboardController:
         value = CopyControls.model_validate(payload)
         with self.lock:
             save_controls(self.copy_controls_path, value)
+            if value.mode != self.copy_controls.mode:
+                self.copy_mode_since = datetime.now(UTC)
             self.copy_controls = value
             return self.copy_controls_view()
 
@@ -337,6 +340,9 @@ class DashboardController:
 
     def receive_signals(self, payload):
         with self.lock:
+            self.signal_copy.copy_mode = self.copy_controls.mode
+            self.signal_copy.armed = bool(self.signal_copy.config) and self.running
+            self.signal_copy.armed_at = self.copy_mode_since
             result = self.signal_copy.receive(payload, self.api, self.selected, self._destination_verified())
             if self.running:
                 for raw, decision in zip(payload, result['results'], strict=True):
@@ -370,14 +376,11 @@ class DashboardController:
             return result
 
     def receive_native(self, payload, *, capture_generation=None):
-        """Record an arriving event as a candidate. The broker session is deliberately withheld
-        from the router here: with no api the router cannot dispatch, so an arriving event can
-        never reach the broker even if the armed flag were somehow set. Sends happen only through
-        send_trade."""
+        """Record and submit new bridge orders according to the Paper/Live switch."""
         with self.lock:
             if not self.running or (capture_generation is not None and capture_generation != self.capture_generation):
                 raise ValueError("Capture is stopped")
-            return self.native.receive(payload, None, self.selected)
+            return automatic.receive(self, payload)
 
     def refresh_session(self):
         """Explicit button action: log in again on the selected account's session."""
@@ -583,7 +586,7 @@ class DashboardController:
             return {
                 "mode": "copying" if self.native.armed else "capture",
                 "version": VERSION,
-                "signal_copying": self.signal_copy.armed,
+                "signal_copying": self.signal_copy.armed and self.copy_controls.mode == "live",
                 "relay_logs": self.relay_logs.status(),
                 "p01_log": {"watching": self.running, "error": self.p01_log.error,
                             "machine": platform.node(),

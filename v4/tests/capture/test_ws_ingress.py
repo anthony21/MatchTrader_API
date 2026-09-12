@@ -149,10 +149,8 @@ def test_bounded_inflight_and_stop_recheck_while_broker_worker_blocked(receiver,
         release.set()
 
 
-def test_arrival_over_websocket_never_writes_even_with_the_flag_forced_and_replay_stays_duplicate(receiver, event, route, broker):
-    """Formerly the armed path: a forced armed flag plus a verified route made the first delivery a
-    broker write. Automatic dispatch is closed at the ingestion choke point, so the same state now
-    records a candidate and nothing more; a lost-ACK replay is still recognised as a duplicate."""
+def test_paper_websocket_receipt_formats_without_writes_and_replay_stays_duplicate(receiver, event, route, broker):
+    """The shared Paper mode overrides legacy flags; replay never sends a second order."""
     controller = receiver.controller
     controller.start('123')
     route = route.model_copy(update={'destination_account': '123'})
@@ -164,7 +162,7 @@ def test_arrival_over_websocket_never_writes_even_with_the_flag_forced_and_repla
         assert greet(ws)['copying_armed'] is True  # the sender is told the flag, and it still means nothing
         ws.send(envelope(event))
         ack = json.loads(ws.recv(timeout=3))
-        assert ack['result']['status'] == 'held' and ack['result']['broker_order_id'] == ''
+        assert ack['result']['status'] == 'paper' and ack['result']['broker_order_id'] == ''
         assert broker.calls == []
         # The sender can replay even when its own durable ACK log was lost: a duplicate, no write.
         ws.send(envelope(event))

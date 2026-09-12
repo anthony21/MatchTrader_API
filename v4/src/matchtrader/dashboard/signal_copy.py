@@ -1,11 +1,8 @@
-"""Explicit, local-only signal copying; durable identities prevent replayed orders.
+"""Format configured strategy intents for broker submission with durable duplicate control.
 
-Opening copies is gated (armed, configured, fresh). Unwinding is not: a `cancelled`, `cancel`
-or `closed` signal is handed to capture.unwind against the ledger of trades the owner sent, and
-acts whatever the toggles say, because it only ever removes exposure. The one legacy case - a
-pending order this module itself dispatched while armed - is cancelled by prepare_cancel under
-the same rule: its checks that the order is still resting and matches the stored copy remain,
-its arming and freshness gates do not.
+The dashboard supplies the shared Live/Paper mode. Its flow opens new intents and
+cancels pending orders only; close messages are observations. Standalone legacy
+callers retain the older arming and unwind contract.
 """
 import hashlib
 import json
@@ -93,6 +90,7 @@ class SignalCopy:
         self.ledger = ledger
         self.lock = RLock()
         self.armed = False
+        self.copy_mode = None
         self.armed_at = None
         self.db = sqlite3.connect(directory / 'signal-copy.sqlite3', check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -123,7 +121,7 @@ class SignalCopy:
         if value.p01_log_enabled and any(v.order_type != 'SOURCE' for v in value.symbols.values()):
             raise ValueError('P01 log routing must preserve the source Limit/Stop order type')
         with self.lock:
-            if self.armed:
+            if self.armed and self.copy_mode != 'paper':
                 raise ValueError('Turn live signal copying off before editing settings')
             save_settings(self.path, value)
             self.config = value
@@ -188,6 +186,10 @@ class SignalCopy:
         if signal.kind == 'intent':
             self._dispatch(key, signal, destination,
                            lambda: self.prepare(signal, closed, api, destination, verified, now, raw=raw))
+        elif self.copy_mode is not None and signal.kind == 'closed':
+            pass  # This flow only opens orders and cancels pending orders; filled positions are left alone.
+        elif self.copy_mode == 'paper' and signal.kind in unwind.CANCEL_KINDS:
+            pass  # Paper cannot cancel a live broker order.
         elif signal.kind in unwind.UNWIND_KINDS:
             self._unwind(key, signal, raw, api, destination, verified)
         return self.result(self.db.execute('SELECT * FROM signals WHERE id=?', (key,)).fetchone())
@@ -195,12 +197,21 @@ class SignalCopy:
     def _dispatch(self, key, signal, destination, preparer):
         try:
             kwargs, method = preparer()
+            if self.copy_mode == 'paper':
+                with self.db:
+                    self.db.execute("UPDATE signals SET decision='paper',destination=?,request=?,reason=? WHERE id=?",
+                                    (destination, json.dumps(kwargs, default=str), 'Paper: broker request recorded; nothing sent', key))
+                return
             # Commit the attempt before invoking a broker write. Uncertain outcomes are never retried.
             with self.db:
                 self.db.execute("UPDATE signals SET decision='dispatching',destination=?,request=? WHERE id=?", (destination, json.dumps(kwargs, default=str), key))
             try:
+                if self.ledger is not None:
+                    self.ledger.raw_log.append('out', 'broker-request', {'signal_id': key, 'body': json.loads(json.dumps(kwargs, default=str))})
                 response = method(**kwargs)
                 response_data = response.model_dump(mode='json')
+                if self.ledger is not None:
+                    self.ledger.raw_log.append('in', 'broker-response', {'signal_id': key, 'body': response_data})
                 accepted = response.status in {'', None, 'OK'} and (bool(response.orderId or response.positionId) if signal.kind == 'intent' else response.status == 'OK')
                 decision = 'accepted' if accepted else 'uncertain'
                 reason = 'MatchTrader accepted the configured copy request' if accepted else 'Unrecognized write response; no automatic retry'
@@ -221,6 +232,9 @@ class SignalCopy:
 
     def _unwind(self, key, signal, raw, api, destination, verified):
         """A cancel or closed signal acts on exposure we created, now, whatever the toggles say."""
+        if self.copy_mode is not None and signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
+            self._dispatch(key, signal, destination, lambda: self.prepare_cancel(signal, raw, api, destination, verified))
+            return
         verb = 'cancel' if signal.kind in unwind.CANCEL_KINDS else 'close'
         outcome = None
         if self.ledger is not None and signal.label:
@@ -254,7 +268,7 @@ class SignalCopy:
         config = self.config
         if not self.armed or not config:
             raise ValueError('Live signal copying is off')
-        if not api or not verified or destination != config.destination_account:
+        if destination != config.destination_account or (self.copy_mode != 'paper' and (not api or not verified)):
             raise ValueError('Connect the configured authenticated destination')
         if signal.machineId != config.machine_id or signal.source not in {config.source, *config.additional_sources}:
             raise ValueError('Signal does not match the configured machine/source')
@@ -275,6 +289,10 @@ class SignalCopy:
 
     def prepare(self, signal, closed, api, destination, verified, now, *, raw=None):
         config = self.check_route(signal, api, destination, verified, now)
+        if self.copy_mode is not None and self.ledger is not None:
+            from ..capture.manual_send import already_sent
+            if any(already_sent(self.ledger, trade['trade_id']) for trade in unwind.linked_trades(self.ledger, signal.machineId, signal.label)):
+                raise ValueError('This lifecycle already has a bridge request; no second order')
         raw = raw or signal.model_dump(mode='json')
         if not signal.label:
             raise ValueError('A labeled lifecycle is required for copying')
@@ -301,6 +319,8 @@ class SignalCopy:
         if order_type == 'ENTRY' and signal.copyOrderType in {'LIMIT', 'STOP'}:
             order_type = signal.copyOrderType
         if order_type == 'ENTRY':
+            if self.copy_mode == 'paper':
+                raise ValueError('Paper preview needs an explicit source Limit or Stop order type')
             quotes = [q for q in api.quotes(symbols=mapping.destination) if q.symbol == mapping.destination]
             if len(quotes) != 1:
                 raise ValueError('A unique destination quote is required for pending entry')
@@ -318,11 +338,12 @@ class SignalCopy:
         if order_type not in {'MARKET', 'LIMIT', 'STOP'}:
             raise ValueError('Source intent has no supported order type')
         event = SimpleNamespace(action='CREATE', order_type=order_type, price=signal.entry, sl=signal.stopLoss, tp=signal.takeProfit, side=side)
-        CaptureRouter._validate_instrument(api, mapping.destination, mapping.fixed_lots, event)
+        if self.copy_mode != 'paper':
+            CaptureRouter._validate_instrument(api, mapping.destination, mapping.fixed_lots, event)
         kwargs = {'instrument': mapping.destination, 'orderSide': side, 'volume': mapping.fixed_lots, 'slPrice': signal.stopLoss, 'tpPrice': signal.takeProfit}
         if order_type == 'MARKET':
-            return kwargs, api.open_position
-        return {**kwargs, 'type': order_type, 'price': signal.entry}, api.create_pending_order
+            return kwargs, api.open_position if self.copy_mode != 'paper' else None
+        return {**kwargs, 'type': order_type, 'price': signal.entry}, api.create_pending_order if self.copy_mode != 'paper' else None
 
     def prepare_cancel(self, signal, raw, api, destination, verified):
         """Cancel a pending order this module dispatched itself. Deliberately not gated by the arming
@@ -330,6 +351,8 @@ class SignalCopy:
         still removes it. The connection and the exact-match checks remain."""
         if not api or not verified:
             raise ValueError('Connect the authenticated destination before cancelling its pending order')
+        if getattr(getattr(api, 'connection', None), 'account_id', destination) != destination:
+            raise ValueError('The broker connection belongs to a different account')
         if not signal.label:
             raise ValueError('Cancellation requires the original label')
         related = self.related(raw)

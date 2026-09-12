@@ -155,7 +155,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <header>
         <div><div class="eyebrow">QUANTOWER → MATCH-TRADER</div><h1>{{ TITLES[page] || 'Trading bridge' }}</h1>
           <p>{{ DESCRIPTIONS[page] || 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
-        <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>Automatic dispatch off · TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
+        <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
       <AccountControls v-if="page !== 'brokers'" :state="state" v-model:selected="selected" :busy="busy"
@@ -191,7 +191,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <template v-else-if="page === 'settings'">
         <CopyControls :pushed="copyControls" />
         <CopySettings :state="state" />
-        <SignalCopySettings :state="state" />
+        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal mapping</summary><SignalCopySettings :state="state" /></details>
       </template>
       <template v-else>
       <OrdersWorkspace :state="state" :mappings="mappings" :busy="busy" @refresh="refreshBroker" />

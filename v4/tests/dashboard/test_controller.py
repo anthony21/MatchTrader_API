@@ -338,7 +338,7 @@ def test_signals_are_captured_while_disarmed_and_never_reach_the_broker(settings
         assert controller.status()['signal_copying'] is False
         result = controller.receive_signals([packet(), packet(clientEventId='cancel', kind='cancelled')])
         assert [r['status'] for r in result['results']] == ['held', 'captured']
-        assert 'off' in result['results'][0]['reason']
+        assert 'ended lifecycle' in result['results'][0]['reason']
         assert controller.api.writes == []
         assert controller.signal_copy.db.execute('SELECT count(*) FROM signals').fetchone()[0] == 2
         assert len(controller.source_signal_feed()) == 2

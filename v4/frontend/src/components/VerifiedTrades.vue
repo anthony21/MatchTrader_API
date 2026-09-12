@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue'
 import { localTime } from '../time.js'
-import TradeSend from './TradeSend.vue'
 // The record page. Local-clock and broker-clock columns stay separate and labelled;
 // only verified_open / verified_closed are styled as verified; every cancelled row
 // shows its reason and origin; TradingBox (PAMM) never confirms or invalidates a row.
@@ -53,7 +52,7 @@ function unwindText(u) {
         <th>Confirmed<span class="clock">local clock</span></th>
         <th>Aqua open time<span class="clock broker">broker clock</span></th>
         <th>PAMM<span class="clock">local clock</span></th>
-        <th>State</th><th>Reason · origin</th><th>Send</th>
+        <th>State</th><th>Reason · origin</th><th>Activity</th>
       </tr></thead>
       <tbody>
         <template v-for="row in ledger" :key="row.trade_id">
@@ -73,7 +72,7 @@ function unwindText(u) {
               <template v-if="row.cancellation">{{ reasonText(row.cancellation) }}
                 <span class="badge origin" :class="`origin-${row.cancellation.origin || 'unrecorded'}`">{{ row.cancellation.origin || 'origin not recorded' }}</span></template>
               <template v-else>—</template></td>
-            <td><TradeSend v-if="row.state === 'candidate'" :row="row" :mode="mode" /><template v-else>—</template></td>
+            <td><span v-if="row.state === 'candidate'">{{ row.reasons?.[0] || 'Awaiting a matching bridge request' }}</span></td>
           </tr>
           <tr class="evidence-row"><td colspan="10"><details>
             <summary>Evidence for {{ row.trade_id }}</summary>
