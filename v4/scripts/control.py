@@ -86,7 +86,7 @@ def main():
             raise RuntimeError('Startup did not finish. See data/runtime logs.')
         print(f'MatchTrader API is ON: {url}\nPress Enter here, use Stop MatchTrader, or click Shut down API to turn it off.', flush=True)
         if not args.no_browser:
-            webbrowser.open(url + '/?page=raw')
+            webbrowser.open(url)
         while not stop.exists() and all(child.poll() is None for child in children.values()):
             if msvcrt.kbhit() and msvcrt.getwch() in {'\r', '\n'}:
                 break
