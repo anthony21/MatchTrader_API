@@ -1,0 +1,7 @@
+{
+  "listenHost": "127.0.0.1",
+  "listenPort": 8787,
+  "upstream": "https://tradingbox.pro",
+  "forward": false,
+  "logDir": "../data/relay_logs/logs"
+}

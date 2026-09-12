@@ -48,7 +48,7 @@ async function save() {
 <template>
   <section class="card copy-settings">
     <h2>Copy settings</h2>
-    <TradingBoxForwarding />
+    <TradingBoxForwarding :pushed="state?.tradingbox_forwarding" />
     <p>Use the quantities, entry, SL and TP actually submitted by Quantower. Saving settings keeps copying off.</p>
     <p v-if="state.copying" role="alert">Stop API trading on the Trading bridge page before editing settings.</p>
     <form @submit.prevent="save">

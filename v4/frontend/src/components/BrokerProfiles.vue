@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { request } from '../api.js'
 import { localTime } from '../time.js'
+// The profile snapshot arrives on the dashboard stream; this never polls for it.
+const props = defineProps({ pushed: Object })
 const profiles = ref([]), busy = ref([]), error = ref('')
 const loginProfile = ref(''), tradingAccount = ref('')
 const selectedProfile = computed(() => profiles.value.find(p => p.profile === loginProfile.value))
@@ -14,7 +16,7 @@ function apply(value) {
     const prior = profiles.value.find(p => p.profile === row.profile)
     return prior && prior.revision > row.revision ? prior : row
   })
-  if (!profiles.value.some(p => p.profile === loginProfile.value)) loginProfile.value = profiles.value[0]?.profile || ''
+  if (!profiles.value.some(p => p.profile === loginProfile.value)) loginProfile.value = profiles.value.some(p => p.profile === value.active_profile) ? value.active_profile : profiles.value[0]?.profile || ''
   if (!selectedProfile.value?.accounts?.some(a => a.id === tradingAccount.value)) tradingAccount.value = ''
 }
 async function act(profile, action, account_id) {
@@ -24,14 +26,26 @@ async function act(profile, action, account_id) {
   catch (e) { if (!disposed) error.value = e.message }
   finally { busy.value = busy.value.filter(p => p !== profile) }
 }
-async function poll() {
-  try {
-    apply(await request('broker-profiles'))
-    await Promise.all(profiles.value.filter(p => p.connection === 'connected').map(p => act(p.profile, 'refresh')))
-  } catch (e) { if (!disposed) error.value = e.message }
-  if (!disposed) timer = setTimeout(poll, 5000)
+// Balances, pending orders and open positions are broker-owned and cannot be pushed,
+// so refresh them only for connected profiles that actually have something working.
+function working(row) {
+  return row.connection === 'connected' && ((row.orders?.length || 0) + (row.positions?.length || 0)) > 0
 }
-onMounted(poll)
+async function refreshWorking() {
+  timer = undefined
+  if (disposed) return
+  const live = profiles.value.filter(working)
+  if (live.length) {
+    try { await Promise.all(live.map(p => act(p.profile, 'refresh'))) }
+    catch (e) { if (!disposed) error.value = e.message }
+  }
+  schedule()
+}
+function schedule() {
+  if (disposed || timer || !profiles.value.some(working)) return
+  timer = setTimeout(refreshWorking, 5000)
+}
+watch(() => props.pushed, value => { if (value) { apply(value); schedule() } }, { immediate: true })
 onUnmounted(() => { disposed = true; clearTimeout(timer) })
 </script>
 <template>
@@ -52,7 +66,7 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
         </template>
       </div>
       <p v-if="selectedProfile?.accounts?.length">{{ selectedProfile.accounts.length }} accounts returned by {{ loginProfile }}. Selecting one opens its account session; credentials and tokens stay on the backend.</p>
-      <p>Only the selected platform is shown. Other platform sessions stay separate. Connected accounts refresh every five seconds while this page is open.</p>
+      <p>Only the selected platform is shown. Other platform sessions stay separate. Profiles arrive from the server as they change; broker balances, orders and positions refresh every five seconds only while a connected account has something pending or open.</p>
       <p v-if="error" role="alert">{{ error }}</p>
       <p v-if="selectedProfile?.error" role="alert">{{ selectedProfile.error }}</p>
       <p v-if="!profiles.length">No profiles loaded. Restart the v4 backend after editing .env.</p></div>

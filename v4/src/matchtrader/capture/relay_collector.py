@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 
+from .lifecycle import stopping
 from .relay_store import CHUNK_BYTES
 
 
@@ -118,13 +119,14 @@ def main(argv=None):
     parser.add_argument('--env', type=Path, default=Path('.env'))
     parser.add_argument('--endpoint', default='http://127.0.0.1:8765/relay/logs')
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--stop-file', type=Path, help='Local launcher shutdown signal')
     args = parser.parse_args(argv)
     token = dotenv_values(args.env).get('MTR_BRIDGE_TOKEN') or ''
     collector = RelayCollector(args.logs, args.state, args.endpoint, token)
     failures = 0
     print('Relay collector ready; replaying existing logs and following new bytes.', flush=True)
     try:
-        while True:
+        while not stopping(args.stop_file):
             try:
                 count = collector.poll()
                 failures = 0

@@ -253,3 +253,131 @@ def test_capture_generation_rejects_queued_previous_session(settings, tmp_path):
             controller.receive_native({}, capture_generation=generation)
     finally:
         controller.close()
+
+
+class VerifiedAPI(FakeAPI):
+    """A connected owner whose session names the selected account; every broker write is forbidden."""
+
+    def __init__(self, settings):
+        self.closed = False
+        self.connection = SimpleNamespace(session_expires_at=None, account_id=settings.account_id)
+        self.writes = []
+
+    def create_pending_order(self, **kwargs):
+        self.writes.append(kwargs)
+        raise AssertionError('Disarmed signal copying must never place an order')
+
+    open_position = cancel_pending_order = close_position = create_pending_order
+
+
+def test_capture_start_needs_no_broker_account_or_login(settings, tmp_path):
+    from tests.dashboard.test_signal_copy import packet
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Capture must not create a broker session')
+
+    controller = DashboardController(settings.model_copy(update={'account_id': ''}), tmp_path, api_factory=forbidden)
+    try:
+        controller.receive_signals([packet()])
+        assert controller.source_signal_feed() == []
+        state = controller.start_capture()
+        assert state['running'] and controller.api is None
+        assert not controller.native.armed and not controller.signal_copy.armed
+        event = packet(clientEventId='x17', detail='x17-spine bar=42')
+        controller.receive_signals([event])
+        controller.receive_signals([event])
+        feed = controller.source_signal_feed()
+        assert len(feed) == 1 and feed[0]['meaning']['source']['code'] == 'X17'
+        assert feed[0]['price'] == 100
+    finally:
+        controller.close()
+
+
+def test_capture_start_preserves_existing_broker_connection(settings, tmp_path):
+    controller = DashboardController(settings, tmp_path)
+    closed = []
+    owner = SimpleNamespace(close=lambda: closed.append(True), connection=SimpleNamespace(session_expires_at=None))
+    controller.api = owner
+    controller.connection = 'connected'
+    try:
+        controller.start_capture()
+        assert controller.api is owner and not closed
+        assert controller.connection == 'connected'
+    finally:
+        controller.close()
+
+
+def test_r01_csv_capture_without_broker_account(settings, tmp_path):
+    import time
+    ledger = tmp_path / 'r01.csv'
+    ledger.write_text('utc,kind,label,symbol,side,entry,sl,tp\n')
+    controller = DashboardController(settings.model_copy(update={'account_id': ''}), tmp_path / 'data', ledger_path=ledger)
+    try:
+        controller.start_capture()
+        with ledger.open('a') as stream:
+            stream.write('2026-09-11T12:00:00Z,intent,R01-one,XAUUSD,long,100,95,105\n')
+        deadline = time.monotonic() + 3
+        while not controller.source_signal_feed() and time.monotonic() < deadline:
+            time.sleep(.05)
+        row = controller.source_signal_feed()[0]
+        assert row['meaning']['source']['code'] == 'R01'
+        assert row['symbol'] == 'XAUUSD' and controller.api is None
+    finally:
+        controller.close()
+
+
+def test_signals_are_captured_while_disarmed_and_never_reach_the_broker(settings, tmp_path):
+    from tests.dashboard.test_signal_copy import config, packet
+    controller = DashboardController(settings, tmp_path, api_factory=VerifiedAPI, interactive_copying=True)
+    try:
+        controller.connect('123')
+        controller.configure_signals(config(destination_account='123'))
+        controller.start('123')
+        assert controller.status()['signal_copying'] is False
+        result = controller.receive_signals([packet(), packet(clientEventId='cancel', kind='cancelled')])
+        assert [r['status'] for r in result['results']] == ['held', 'captured']
+        assert 'off' in result['results'][0]['reason']
+        assert controller.api.writes == []
+        assert controller.signal_copy.db.execute('SELECT count(*) FROM signals').fetchone()[0] == 2
+        assert len(controller.source_signal_feed()) == 2
+        assert controller.source_signal_feed()[0]['copy_result']['status'] == 'held'
+    finally:
+        controller.close()
+    # A restart never re-arms: the switch lives in memory only.
+    again = DashboardController(settings, tmp_path, api_factory=VerifiedAPI, interactive_copying=True)
+    try:
+        assert again.signal_copy.armed is False and again.status()['signal_copying'] is False
+        assert again.signal_copy.config.destination_account == '123'
+    finally:
+        again.close()
+
+
+def test_signal_arming_requires_connected_destination_and_stop_disarms(settings, tmp_path):
+    from tests.dashboard.test_signal_copy import config
+    controller = DashboardController(settings, tmp_path, api_factory=VerifiedAPI, interactive_copying=True)
+    try:
+        with pytest.raises(ValueError):
+            controller.set_signal_copying(True)
+        controller.connect('123')
+        with pytest.raises(ValueError):
+            controller.set_signal_copying(True)  # no settings yet
+        controller.configure_signals(config(destination_account='123'))
+        with pytest.raises(ValueError):
+            controller.set_signal_copying('yes')
+        assert controller.set_signal_copying(True)['live'] is True
+        assert controller.status()['signal_copying'] is True
+        with pytest.raises(ValueError, match='signal copying off'):
+            controller.set_copying(True)
+        with pytest.raises(ValueError):
+            controller.configure_signals(config(destination_account='123'))
+        controller.stop()
+        assert controller.signal_copy.armed is False
+        assert controller.status()['signal_copying'] is False
+        # Reconnecting or selecting another account also drops the switch.
+        controller.connect('123')
+        controller.configure_signals(config(destination_account='123'))
+        controller.set_signal_copying(True)
+        controller.connect('123')
+        assert controller.signal_copy.armed is False
+    finally:
+        controller.close()

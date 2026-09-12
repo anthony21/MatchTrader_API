@@ -27,7 +27,7 @@ requires-poetry = ">=2.2,<3"
 packages = [{ include = "matchtrader", from = "src" }]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "relay/tests"]
 addopts = "--import-mode=importlib -ra --cov=matchtrader --cov-report=term-missing"
 
 [tool.ruff]

@@ -1,56 +1,93 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import { request } from './api.js'
-import { followNativeEvents } from './stream.js'
+import { followDashboard } from './stream.js'
 import AccountControls from './components/AccountControls.vue'
 import OrdersWorkspace from './components/OrdersWorkspace.vue'
 import TokenSession from './components/TokenSession.vue'
 import NativeEvents from './components/NativeEvents.vue'
 import CopySettings from './components/CopySettings.vue'
+import SignalCopySettings from './components/SignalCopySettings.vue'
+import SignalActivity from './components/SignalActivity.vue'
 import RawEvents from './components/RawEvents.vue'
 import LoggingEvents from './components/LoggingEvents.vue'
 import BrokerProfiles from './components/BrokerProfiles.vue'
 
+const PAGES = ['bridge', 'orders', 'brokers', 'logging', 'raw', 'settings']
 const state = ref({ accounts: [], running: false, connection: 'disconnected', orders: [], orders_at: null })
 const selected = ref('')
 const events = ref([])
 const nativeEvents = ref([])
 const mappings = ref([])
-const page = ref('bridge')
-let lastBrokerRefresh = 0
+const brokerProfiles = ref(null)
+const requestedPage = new URLSearchParams(window.location.search).get('page')
+const page = ref(PAGES.includes(requestedPage) ? requestedPage : 'bridge')
 const busy = ref(false)
 const activeAction = ref('')
 const error = ref('')
-let timer, disposed = false, stopStream
+const signalsExpanded = ref(false)
 const streamStatus = ref('connecting')
+let disposed = false, stopStream, brokerTimer
 
-async function refresh() {
-  const current = await request('status')
-  const accountChanged = current.account_id !== state.value.account_id
-  state.value = current
-  if (accountChanged || !selected.value || !current.accounts.some(account => account.id === selected.value)) selected.value = current.account_id
-  const feed = await request('events')
-  events.value = feed.account_id === current.account_id ? feed.events : []
-  if (streamStatus.value !== 'live') {
-    const snapshot = await request('capture/events')
-    if (streamStatus.value !== 'live') nativeEvents.value = snapshot.events ?? []
-  }
-  const mappingFeed = await request('trade-mappings')
-  mappings.value = mappingFeed.account_id === current.account_id ? mappingFeed.mappings ?? [] : []
+// Broker orders and positions live upstream, so they are the only state the server
+// cannot observe and push. Refresh them solely while something is pending or open;
+// the timer re-arms itself only while that stays true and stops on its own otherwise.
+function brokerWorkOutstanding() {
+  return state.value.connection === 'connected'
+    && ((state.value.orders?.length || 0) + (state.value.positions?.length || 0)) > 0
 }
-async function poll() {
-  if (!busy.value) {
-    try { await refresh(); error.value = '' } catch (err) { error.value = err.message }
-    if (page.value === 'orders' && state.value.connection === 'connected' && Date.now() - lastBrokerRefresh > 5000) {
-      await refreshBroker()
-    }
-  }
-  if (!disposed) timer = setTimeout(poll, 1500)
+function scheduleBrokerRefresh() {
+  if (disposed || brokerTimer || !brokerWorkOutstanding()) return
+  brokerTimer = setTimeout(runBrokerRefresh, 5000)
 }
+async function runBrokerRefresh() {
+  brokerTimer = undefined
+  if (disposed) return
+  if (!busy.value && brokerWorkOutstanding()) {
+    try { await readBroker() } catch (err) { error.value = err.message }
+  }
+  scheduleBrokerRefresh()
+}
+async function readBroker() {
+  state.value = await request('orders/refresh', { account_id: selected.value })
+  state.value = await request('positions/refresh', { account_id: selected.value })
+}
+// Explicit refresh from the Orders workspace or on opening it.
 async function refreshBroker() {
-  lastBrokerRefresh = Date.now()
-  await action('orders/refresh')
-  await action('positions/refresh')
+  busy.value = true
+  activeAction.value = 'orders/refresh'
+  error.value = ''
+  try { await readBroker() } catch (err) { error.value = err.message }
+  finally { busy.value = false; activeAction.value = ''; scheduleBrokerRefresh() }
+}
+
+// Sections keep their object identity across merges, so an unchanged one is skipped.
+const applied = {}
+function changed(snapshot, key) {
+  if (!snapshot[key] || applied[key] === snapshot[key]) return false
+  applied[key] = snapshot[key]
+  return true
+}
+function apply(snapshot) {
+  if (disposed) return
+  const statusChanged = changed(snapshot, 'status')
+  if (statusChanged) {
+    const current = snapshot.status
+    const accountChanged = current.account_id !== state.value.account_id
+    state.value = current
+    if (accountChanged || !selected.value || !current.accounts.some(account => account.id === selected.value)) selected.value = current.account_id
+    scheduleBrokerRefresh()
+  }
+  // Account-scoped feeds are filtered against the account in view, so re-derive them
+  // when either the feed or the account changed.
+  if (changed(snapshot, 'events') || (statusChanged && applied.events)) {
+    events.value = applied.events.account_id === state.value.account_id ? applied.events.events ?? [] : []
+  }
+  if (changed(snapshot, 'capture_events')) nativeEvents.value = applied.capture_events.events ?? []
+  if (changed(snapshot, 'mappings') || (statusChanged && applied.mappings)) {
+    mappings.value = applied.mappings.account_id === state.value.account_id ? applied.mappings.mappings ?? [] : []
+  }
+  if (changed(snapshot, 'broker_profiles')) brokerProfiles.value = applied.broker_profiles
 }
 async function openPage(value) {
   page.value = value
@@ -68,15 +105,15 @@ async function action(name) {
   error.value = ''
   try {
     state.value = await request(name, { account_id: selected.value })
-    await refresh()
   } catch (err) { error.value = err.message }
-  finally { busy.value = false; activeAction.value = '' }
+  finally { busy.value = false; activeAction.value = ''; scheduleBrokerRefresh() }
 }
 onMounted(() => {
-  stopStream = followNativeEvents(value => { nativeEvents.value = value }, value => { streamStatus.value = value })
-  poll()
+  // The server pushes status, events, capture events, mappings and broker profiles;
+  // nothing here polls for them.
+  stopStream = followDashboard(apply, value => { streamStatus.value = value })
 })
-onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(timer) })
+onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) })
 </script>
 
 <template>
@@ -95,7 +132,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(timer) })
     <main>
       <header>
         <div><div class="eyebrow">QUANTOWER → MATCH-TRADER</div><h1>{{ page === 'brokers' ? 'Broker accounts' : page === 'logging' ? 'Event logging' : page === 'raw' ? 'Raw events' : page === 'settings' ? 'Copy settings' : page === 'orders' ? 'Orders & positions' : 'Trading bridge' }}</h1>
-          <p>{{ page === 'orders' ? 'Positions, pending orders and copy activity — organized by trade.' : 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
+          <p>{{ page === 'orders' ? 'Positions, pending orders and copy activity — organized by trade.' : page === 'raw' ? 'Inspect recorded requests and replies.' : 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
         <div class="mode-pill"><span class="small-dot"></span>{{ state.copying ? 'API trading enabled' : 'API trading off' }} · TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }}</div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
@@ -115,10 +152,19 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(timer) })
       <template v-if="page === 'bridge'">
       <NativeEvents :events="nativeEvents" :legacy-events="events" :stream-status="streamStatus" :state="state" :busy="busy" @toggle="toggleCopying" />
       </template>
-      <BrokerProfiles v-else-if="page === 'brokers'" />
+      <BrokerProfiles v-else-if="page === 'brokers'" :pushed="brokerProfiles" />
       <LoggingEvents v-else-if="page === 'logging'" />
-      <RawEvents v-else-if="page === 'raw'" :state="state" />
-      <CopySettings v-else-if="page === 'settings'" :state="state" @saved="refresh" />
+      <template v-else-if="page === 'raw'">
+        <RawEvents :state="state" />
+        <details class="card" style="margin-top:20px;padding:20px" @toggle="signalsExpanded = $event.target.open">
+          <summary style="cursor:pointer">Recent signal activity</summary>
+          <SignalActivity v-if="signalsExpanded" />
+        </details>
+      </template>
+      <template v-else-if="page === 'settings'">
+        <CopySettings :state="state" />
+        <SignalCopySettings :state="state" />
+      </template>
       <template v-else>
       <OrdersWorkspace :state="state" :mappings="mappings" :busy="busy" @refresh="refreshBroker" />
       </template>

@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+import os
+import platform
+from collections import deque
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +24,10 @@ from ..core.errors import APIError
 from ..core.settings import Settings
 from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_settings import CopySettings, load_settings, save_settings
+from .p01_log import P01Log
+from .signal_copy import SignalCopy
+
+DEFAULT_P01_LOG_PATH = 'C:/Quantower/Settings/Scripts/Indicators/_HCAMM_Shared/P01_RR.log'
 
 
 class DashboardController:
@@ -35,6 +42,7 @@ class DashboardController:
         route=None,
         csv_limit=1000,
         interactive_copying=False,
+        p01_log_path=None,
     ):
         saved = load_settings(data_dir / "copy-settings.json")
         if saved and route is None:
@@ -55,6 +63,7 @@ class DashboardController:
         self.running = False
         self.capture_generation = 0
         self.capture_websocket = None
+        self.source_signals = deque(maxlen=200)
         self.api = None
         self.broker_profiles = None
         self.tradingbox_forwarder = None
@@ -67,6 +76,9 @@ class DashboardController:
         self.native = CaptureRouter(self.native_store, route)
         self.relay_logs = RelayLogStore(data_dir / 'relay')
         self.logging_events = LoggingStore(data_dir / 'logging')
+        # Signal copying starts disarmed on every process start; only an explicit action arms it.
+        self.signal_copy = SignalCopy(data_dir / 'relay')
+        self.p01_log = P01Log(p01_log_path or os.environ.get('MTR_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
         self.token_message = ""
         self.reconciliation_message = ""
         self.lock = RLock()
@@ -99,6 +111,7 @@ class DashboardController:
             self.positions = []
             self.positions_at = None
             self.native.armed = False
+            self.signal_copy.arm(False)
             self._open_journal()
 
     def connect(self, account_id, *, authentication=None):
@@ -115,6 +128,7 @@ class DashboardController:
             self.positions = []
             self.positions_at = None
             self.native.armed = False
+            self.signal_copy.arm(False)
             self.native.demo_verified = False
             overrides = {"account_id": account_id}
             if account_id != self.settings.account_id:
@@ -185,6 +199,8 @@ class DashboardController:
             if not isinstance(enabled, bool):
                 raise ValueError("Enabled must be a boolean")
             route = self.native.route
+            if enabled and self.signal_copy.armed:
+                raise ValueError('Turn signal copying off before enabling native copying')
             if enabled and not (
                 self.running
                 and self.api
@@ -238,6 +254,67 @@ class DashboardController:
             self.native_store.export()
             return self.copy_settings()
 
+    def configure_signals(self, payload):
+        with self.lifecycle, self.lock:
+            if not self.interactive_copying:
+                raise ValueError('Interactive copying is disabled')
+            return self.signal_copy.configure(payload)
+
+    def set_signal_copying(self, enabled):
+        with self.lifecycle, self.lock:
+            config = self.signal_copy.config
+            if type(enabled) is not bool:
+                raise ValueError('Enabled must be a boolean')
+            if enabled and not (self.interactive_copying and self.api and self.connection == 'connected'
+                                and self.api.connection.account_id == self.selected
+                                and config and config.destination_account == self.selected and not self.native.armed):
+                raise ValueError('Connect the configured destination account and turn native copying off first')
+            if not enabled:
+                self.native.armed = False
+            self.signal_copy.arm(enabled)
+            return self.signal_copy.settings()
+
+    def source_signal_feed(self):
+        with self.lock:
+            return list(self.source_signals)
+
+    def _destination_verified(self):
+        return self.connection == 'connected' and self.api is not None and self.api.connection.account_id == self.selected
+
+    def receive_signals(self, payload):
+        with self.lock:
+            result = self.signal_copy.receive(payload, self.api, self.selected, self._destination_verified())
+            if self.running:
+                for raw, decision in zip(payload, result['results'], strict=True):
+                    if decision.get('status') == 'invalid':
+                        continue
+                    identity = 'signal:' + str(raw.get('machineId', '')) + ':' + str(raw.get('clientEventId', ''))
+                    if any(row['id'] == identity for row in self.source_signals):
+                        continue
+                    if raw.get('source') == 'P01_LOG':
+                        continue  # Already represented by the P01 log feed.
+                    label = str(raw.get('label', ''))
+                    detail = str(raw.get('detail', ''))
+                    name = str(raw.get('source', '')).upper()
+                    code = ('P01' if name == 'PANEL' and label.startswith('P01RR_')
+                            else 'X17' if 'x17-spine' in detail.lower() or name == 'X17'
+                            else 'R01' if name == 'R01' or label.startswith('R01') else 'UNKNOWN')
+                    self.source_signals.append({
+                        'id': identity,
+                        'trade_id': label, 'source_label': label, 'machine': raw.get('machineId'),
+                        'connection_id': raw.get('connectionName'), 'symbol': raw.get('symbol'),
+                        'side': raw.get('side'), 'kind': raw.get('kind'), 'action': 'OBSERVE',
+                        'price': raw.get('entry'), 'sl': raw.get('stopLoss'), 'tp': raw.get('takeProfit'),
+                        'emitted_at': raw.get('timestampUtc'), 'received_at': datetime.now(UTC).isoformat(),
+                        'decision': decision.get('status', 'captured'), 'reason': detail, 'copy_result': decision,
+                        'meaning': {'source': {'code': code, 'label': code if code != 'UNKNOWN' else 'Quantower signal'},
+                                    'event': {'label': str(raw.get('kind', 'Signal'))},
+                                    'opened': {'state': 'unconfirmed', 'label': 'Source report'},
+                                    'result': 'Received from source; not broker execution evidence'},
+                    })
+                self.native_store.notify_stream()
+            return result
+
     def receive_native(self, payload, *, capture_generation=None):
         with self.lock:
             if not self.running or (capture_generation is not None and capture_generation != self.capture_generation):
@@ -261,6 +338,7 @@ class DashboardController:
                 )
                 if not self.native.demo_verified:
                     self.native.armed = False
+                    self.signal_copy.arm(False)
                 self.connection = "connected"
                 self.connection_message = (
                     "Connected. Copying is enabled."
@@ -299,15 +377,21 @@ class DashboardController:
                 raise ValueError(self.connection_message) from None
             return self.status()
 
+    def start_capture(self):
+        """Start observing sources without touching the selected broker account or its session."""
+        return self.start(None)
+
     def start(self, account_id):
         with self.lifecycle, self.lock:
             if self.running:
-                if account_id != self.selected:
+                if account_id is not None and account_id != self.selected:
                     raise ValueError("Stop capture before changing accounts")
                 return self.status()
-            self._select(account_id)
+            if account_id is not None:
+                self._select(account_id)
             tail = LedgerTail(self.ledger_path) if self.ledger_path else None
             self.halt.clear()
+            self.p01_log.start()
             self.capture_generation += 1
             self.running = True
             self.capture_message = (
@@ -326,10 +410,26 @@ class DashboardController:
                 with self.lock:
                     if not self.running:
                         break
+                    if self.p01_log.poll():
+                        self._copy_p01_intents()
+                        self.native_store.notify_stream()
                     for offset, payload in tail.poll() if tail else ():
-                        self.bridge.journal.observe(
-                            datetime.now(UTC).isoformat(), str(tail.path), offset, payload
-                        )
+                        if self.bridge:
+                            self.bridge.journal.observe(
+                                datetime.now(UTC).isoformat(), str(tail.path), offset, payload
+                            )
+                        else:
+                            row = payload['record']
+                            self.source_signals.append({
+                                'id': f'csv:{offset}', 'trade_id': row.get('label'), 'symbol': row.get('symbol'),
+                                'side': row.get('side'), 'kind': row.get('kind'), 'action': 'OBSERVE',
+                                'price': row.get('entry'), 'sl': row.get('sl'), 'tp': row.get('tp'),
+                                'emitted_at': row.get('utc'), 'received_at': datetime.now(UTC).isoformat(),
+                                'decision': 'observation', 'reason': 'R01 source ledger observation',
+                                'meaning': {'source': {'code': 'R01', 'label': 'R01'},
+                                            'opened': {'state': 'unconfirmed', 'label': 'Source report'}},
+                            })
+                            self.native_store.notify_stream()
                     if self.api and self.native.route and monotonic() >= next_reconcile:
                         next_reconcile = monotonic() + 15
                         try:
@@ -346,6 +446,7 @@ class DashboardController:
             with self.lock:
                 self.running = False
                 self.native.armed = False
+                self.signal_copy.arm(False)
                 self.capture_message = (
                     "Observation stopped after a ledger read error. Check the source and restart."
                 )
@@ -353,11 +454,34 @@ class DashboardController:
             if tail:
                 tail.close()
 
+    def _copy_p01_intents(self):
+        rows = self.p01_log.drain_intents()
+        config = self.signal_copy.config
+        if not config or not config.p01_log_enabled or not self.signal_copy.armed:
+            return
+        recent = self.p01_log.feed()
+        for row in rows:
+            try:
+                if any(e['action'] in {'RELEASE', 'REMOVE', 'CLOSE_CANCEL_INTENT'}
+                       and e['emitted_at'] >= row['emitted_at']
+                       and (e['trade_id'] == row['trade_id'] or e['action'] == 'CLOSE_CANCEL_INTENT') for e in recent):
+                    raise ValueError('P01 intent already removed or released; no copy')
+                signal = self.p01_log.signal(row)
+                result = self.signal_copy.receive(
+                    [signal], self.api, self.selected, self._destination_verified())['results'][0]
+                row.update(symbol=signal['symbol'], copy_result=result)
+                row['reason'] += ' | Copy: ' + result['reason']
+            except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+                row['copy_result'] = {'status': 'held',
+                                      'reason': 'P01 state unavailable, mismatched or lifecycle ended; no copy'}
+                row['reason'] += ' | Copy held: matching current P01 state required; ended intents are not copied'
+
     def stop(self):
         with self.lifecycle:
             with self.lock:
                 self.running = False
                 self.native.armed = False
+                self.signal_copy.arm(False)
                 self.halt.set()
             if self.worker:
                 self.worker.join(timeout=10)
@@ -387,6 +511,7 @@ class DashboardController:
         self.native_store.close()
         self.relay_logs.close()
         self.logging_events.close()
+        self.signal_copy.close()
 
     def receive(self, payload):
         with self.lock:
@@ -399,7 +524,11 @@ class DashboardController:
             return {
                 "mode": "copying" if self.native.armed else "capture",
                 "version": VERSION,
+                "signal_copying": self.signal_copy.armed,
                 "relay_logs": self.relay_logs.status(),
+                "p01_log": {"watching": self.running, "error": self.p01_log.error,
+                            "machine": platform.node(),
+                            "path": str(self.p01_log.path), "retained": len(self.p01_log.feed())},
                 "tradingbox_forwarding": self.tradingbox_forwarder.status() if self.tradingbox_forwarder else {"enabled": False, "live": False},
                 "capture_websocket": self.capture_websocket.status() if self.capture_websocket else {"listening": False},
                 "event_schema_version": EVENT_SCHEMA_VERSION,

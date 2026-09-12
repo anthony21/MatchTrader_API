@@ -1,6 +1,7 @@
 """Serve compiled Vue assets and a same-origin local control API."""
 
 import base64
+import hashlib
 import hmac
 import json
 import mimetypes
@@ -8,13 +9,15 @@ import secrets
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import BoundedSemaphore, Event
+from threading import BoundedSemaphore, Event, Thread
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ..bridge.server import MAX_BODY, ingest
 from ..capture.logging_store import MAX_LOG_BODY
 from ..capture.meaning import catalog
 from ..capture.tradingbox_forwarder import MAX_REQUEST, end_to_end, validate_target
+
+MAX_SIGNAL_BODY = 1024 * 1024
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
@@ -89,6 +92,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.stream_native(raw=True)
             if path == "/api/capture/stream":
                 return self.stream_native()
+            if path == "/api/stream":
+                return self.stream_dashboard()
+            if path == '/api/signal-copy-settings':
+                return self.reply(200, self.server.controller.signal_copy.settings())
+            if path == '/api/signal-copy-events':
+                return self.reply(200, self.server.controller.signal_copy.feed())
             if path == '/api/tradingbox-forwarding':
                 forwarder = self.server.controller.tradingbox_forwarder
                 return self.reply(200, forwarder.status() if forwarder else {'enabled': False, 'live': False, 'key_configured': False, 'url': ''})
@@ -120,7 +129,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/events":
                 return self.reply(200, self.server.controller.feed())
             if path == "/api/capture/events":
-                return self.reply(200, {"events": self.server.controller.native_store.feed()})
+                controller = self.server.controller
+                return self.reply(200, {"events": controller.native_store.feed()
+                                       + controller.p01_log.feed() + controller.source_signal_feed()})
             if path == "/api/trade-mappings":
                 controller = self.server.controller
                 with controller.lock:
@@ -134,6 +145,66 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(
             200, target.read_bytes(), mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         )
+
+    @staticmethod
+    def dashboard_sections(controller, events):
+        """Everything the shell used to poll for, built once per committed change."""
+        with controller.lock:
+            mappings = {"account_id": controller.selected,
+                        "mappings": controller.native_store.mapping_view(controller.selected)}
+        profiles = controller.broker_profiles
+        return {
+            "status": controller.status(),
+            "events": controller.feed(),
+            "capture_events": {"events": events + controller.p01_log.feed() + controller.source_signal_feed()},
+            "mappings": mappings,
+            "broker_profiles": profiles.snapshot() if profiles else {"profiles": [], "limit": 5},
+        }
+
+    @staticmethod
+    def section_digest(name, section):
+        # server_time advances on every build; on its own it must never force a resend.
+        if name == "status":
+            section = {key: value for key, value in section.items() if key != "server_time"}
+        return hashlib.sha256(json.dumps(section, sort_keys=True, default=str).encode()).hexdigest()
+
+    def stream_dashboard(self):
+        """One push stream for every locally-known panel, so the shell never polls itself."""
+        if not self.server.stream_slots.acquire(blocking=False):
+            return self.reply(503, {"error": "Too many open event streams"})
+        self.close_connection = True
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            revision, sent = -1, {}
+            while not self.server.stream_stop.is_set():
+                controller = self.server.controller
+                snapshot = controller.native_store.stream_snapshot(revision)
+                if snapshot is None or self.server.stream_stop.is_set():
+                    break
+                revision = snapshot["revision"]
+                payload = {"revision": revision}
+                if "events" in snapshot:
+                    for name, section in self.dashboard_sections(controller, snapshot["events"]).items():
+                        digest = self.section_digest(name, section)
+                        if digest != sent.get(name):
+                            sent[name] = digest
+                            payload[name] = section
+                # Unchanged sections cost one comment; only real changes reach the client.
+                data = (("data: " + json.dumps(payload, default=str) + "\n\n").encode()
+                        if len(payload) > 1 else b": heartbeat\n\n")
+                self.wfile.write(data)
+                self.wfile.flush()
+        except (OSError, TimeoutError):
+            pass  # Disconnected/slow readers never block capture or routing.
+        finally:
+            self.server.stream_slots.release()
 
     def stream_native(self, raw=False):
         if not self.server.stream_slots.acquire(blocking=False):
@@ -155,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
                 if snapshot is None or self.server.stream_stop.is_set():
                     break
                 revision = snapshot["revision"]
+                if not raw and 'events' in snapshot:
+                    controller = self.server.controller
+                    snapshot['events'] += controller.p01_log.feed() + controller.source_signal_feed()
                 data = ("data: " + json.dumps(snapshot) + "\n\n").encode() if "events" in snapshot else b": heartbeat\n\n"
                 self.wfile.write(data)
                 self.wfile.flush()
@@ -245,18 +319,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.forward_tradingbox()
         if not self.server.trusted(self.headers):
             return self.reply(403, {"error": "Local same-origin access required"})
-        if self.path not in {"/events", "/capture/events", "/relay/logs", "/logging/events"} and not self.server.authorized(self.headers):
+        sender_paths = {"/events", "/capture/events", "/capture/signals", "/relay/logs", "/logging/events"}
+        if self.path not in sender_paths and not self.server.authorized(self.headers):
             return self.reply(401, {"error": "Reload the dashboard to start a new local session"})
         try:
             lengths = self.headers.get_all("Content-Length", [])
             length = int(lengths[0]) if len(lengths) == 1 else -1
         except ValueError:
             length = -1
-        body_limit = MAX_LOG_BODY if self.path in {"/logging/events"} else MAX_BODY
+        body_limit = (MAX_LOG_BODY if self.path == "/logging/events"
+                      else MAX_SIGNAL_BODY if self.path == "/capture/signals" else MAX_BODY)
         if not 0 <= length <= body_limit or self.headers.get("Transfer-Encoding"):
             return self.reply(413, {"error": "Invalid request size"})
         try:
             body = self.rfile.read(length)
+            if self.path == '/capture/signals':
+                # Relay/sender only: a browser request always carries Origin and is refused outright.
+                token = self.server.bridge_token
+                if (self.headers.get('Origin') is not None or not token or not hmac.compare_digest(
+                        self.headers.get('Authorization', '').encode(), ('Bearer ' + token).encode())):
+                    return self.reply(401, {'error': 'Local signal receiver authentication required'})
+                return self.reply(202, self.server.controller.receive_signals(json.loads(body)))
             if self.path == '/logging/events':
                 token = self.server.bridge_token
                 if (self.headers.get('Origin') is not None or not token or not hmac.compare_digest(
@@ -279,6 +362,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not result['duplicate']:
                     raw = base64.b64decode(payload['data_base64']).decode('utf-8', errors='replace')
                     self.server.controller.native_store.raw_log.append('in', 'tradingbox-relay', raw, token)
+                    # Relay counters live in status(); wake the dashboard stream instead of being polled for.
+                    self.server.controller.native_store.notify_stream()
                 return self.reply(202, result)
             if self.path == "/capture/events":
                 token = self.server.bridge_token
@@ -304,6 +389,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("Invalid request")
             controller = self.server.controller
+            if self.path == "/api/shutdown":
+                controller.stop()
+                self.reply(200, {"stopping": True})
+                Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if self.path == '/api/tradingbox-forwarding':
                 if controller.tradingbox_forwarder is None:
                     raise ValueError('Forwarder unavailable')
@@ -320,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.connect(payload.get("account_id"))
             elif self.path == "/api/start":
                 result = controller.start(payload.get("account_id"))
+            elif self.path == "/api/capture/start":
+                result = controller.start_capture()
             elif self.path == "/api/stop":
                 result = controller.stop()
             elif self.path == "/api/orders/closed":
@@ -347,10 +439,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.configure_copying(payload)
             elif self.path == "/api/copying":
                 result = controller.set_copying(payload.get("enabled"))
+            elif self.path == '/api/signal-copy-settings':
+                result = controller.configure_signals(payload)
+            elif self.path == '/api/signal-copying':
+                result = controller.set_signal_copying(payload.get('enabled'))
             elif self.path == "/api/token/refresh":
                 result = controller.refresh_session()
             else:
                 return self.reply(404, {"error": "Unknown endpoint"})
+            # Every action above changes status(); one wake here keeps the UI push-only.
+            controller.native_store.notify_stream()
             self.reply(200, result)
         except (ValueError, TypeError, KeyError):
             self.reply(

@@ -71,3 +71,20 @@ def test_bad_ack_retains_pending_and_rotation_starts_new_stream(tmp_path):
     assert receiver.status()['streams'] == 2
     sender.close()
     receiver.close()
+
+
+def test_stop_file_ends_the_collector_loop_before_any_delivery(tmp_path, monkeypatch, capsys):
+    from matchtrader.capture import relay_collector
+
+    monkeypatch.delenv('HCAMM_CONTROL_LOCK', raising=False)
+    logs = tmp_path / 'logs'
+    logs.mkdir()
+    (logs / 'raw-request-20260911.jsonl').write_text('{"never":"delivered"}\n')
+    environment = tmp_path / '.env'
+    environment.write_text('MTR_BRIDGE_TOKEN=' + 'x' * 40 + '\n')
+    stop = tmp_path / 'collector.stop'
+    stop.touch()
+    relay_collector.main(['--logs', str(logs), '--state', str(tmp_path / 'state.sqlite3'),
+                          '--env', str(environment), '--stop-file', str(stop)])
+    out = capsys.readouterr().out
+    assert 'Relay collector ready' in out and 'delivered' not in out.lower().replace('collector ready', '')

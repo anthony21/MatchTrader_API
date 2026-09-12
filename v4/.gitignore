@@ -19,3 +19,7 @@ test-results/
 playwright-report/
 **/bin/
 **/obj/
+
+# Local launcher/relay configuration; ship the .example files only
+local-runtime.json
+relay/relay.json

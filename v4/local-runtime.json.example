@@ -1,0 +1,11 @@
+{
+  "python": ".venv/Scripts/python.exe",
+  "env": ".env",
+  "data": "data/dashboard",
+  "relay_config": "relay/relay.json",
+  "logs": "data/relay_logs/logs",
+  "checkpoint": "data/relay_logs/delivery/collector.sqlite3",
+  "dashboard_port": 8765,
+  "ws_port": 8767,
+  "relay_port": 8787
+}

@@ -1,8 +1,17 @@
 import { flushPromises } from '@vue/test-utils'
 import { expect, test, vi } from 'vitest'
 
-vi.mock('./api.js', () => ({ request: vi.fn(async path => path === 'events' ? { account_id: 'test', events: [] }
-  : { account_id: 'test', accounts: [{ id: 'test' }], running: false, connection: 'disconnected', orders: [] }) }))
+// The entry point mounts the push-driven shell: status arrives on the dashboard stream.
+vi.mock('./api.js', () => ({ request: vi.fn() }))
+vi.mock('./stream.js', () => ({
+  followNativeEvents: vi.fn(() => () => {}),
+  followDashboard: vi.fn((onSnapshot, onState) => {
+    onState('live')
+    onSnapshot({ status: { account_id: 'test', accounts: [{ id: 'test' }], running: false, connection: 'disconnected', orders: [] },
+      events: { account_id: 'test', events: [] } })
+    return () => {}
+  }),
+}))
 
 test('application entry mounts the functional account controls', async () => {
   document.body.innerHTML = '<div id="app"></div>'

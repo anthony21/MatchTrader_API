@@ -1,16 +1,20 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { request } from '../api.js'
+// Forwarding status is part of the pushed dashboard status; when the shell supplies it
+// nothing here fetches. A standalone mount reads it once and never on a timer.
+const props = defineProps({ pushed: Object })
 const current = ref({ enabled: false, live: false, url: '', key_configured: false, generation: -1 })
 const url = ref(''), busy = ref(false), error = ref('')
-let timer, disposed = false
-function apply(value) { if (!disposed && (value.generation ?? 0) >= current.value.generation) current.value = value }
-async function refresh() {
-  if (!busy.value) {
-    try { const value = await request('tradingbox-forwarding'); apply(value); if (!url.value) url.value = value.url || '' }
-    catch (e) { if (!disposed) error.value = e.message }
-  }
-  if (!disposed) timer = setTimeout(refresh, 2000)
+let disposed = false
+function apply(value) {
+  if (disposed || (value.generation ?? 0) < current.value.generation) return
+  current.value = value
+  if (!url.value) url.value = value.url || ''
+}
+async function load() {
+  try { apply(await request('tradingbox-forwarding')) }
+  catch (e) { if (!disposed) error.value = e.message }
 }
 async function save(value) {
   busy.value = true; error.value = ''
@@ -18,8 +22,9 @@ async function save(value) {
   catch (e) { error.value = e.message }
   finally { busy.value = false }
 }
-onMounted(refresh)
-onUnmounted(() => { disposed = true; clearTimeout(timer) })
+watch(() => props.pushed, value => { if (value) apply(value) }, { immediate: true })
+onMounted(() => { if (!props.pushed) load() })
+onUnmounted(() => { disposed = true })
 </script>
 <template>
   <section class="forwarding-settings" aria-label="TradingBox forwarding">

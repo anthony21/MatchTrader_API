@@ -350,3 +350,205 @@ def test_closed_history_is_authenticated_and_account_scoped(server):
     assert code == 200 and json.loads(raw)['summary']['closed'] == 1
     assert call(server, '/api/orders/closed', 'POST', {**payload, 'account_id': 'other'}, headers)[0] == 400
     assert call(server, '/api/orders/closed', 'POST', payload, {**headers, 'Origin': 'https://attacker.example'})[0] == 403
+
+
+def test_p01_observations_join_display_feed_without_entering_native_journal(server):
+    store = server.controller.native_store
+    before = store.db.execute('SELECT count(*) FROM events').fetchone()[0]
+    server.controller.p01_log.record("2026-09-11T17:28:10Z box OPEN clicked id='P01RR_172810_193' side=0 entry=76702.2055")
+    status, raw = call(server, '/api/capture/events', headers={'X-Session-Token': 'test-session'})
+    assert status == 200
+    event = json.loads(raw)['events'][-1]
+    assert event['kind'] == 'P01_LOG' and event['trade_id'] == 'P01RR_172810_193'
+    assert store.db.execute('SELECT count(*) FROM events').fetchone()[0] == before
+    assert not server.controller.native.armed
+
+
+def test_large_signal_batch_is_authenticated_and_logged_with_copying_off(server):
+    from tests.dashboard.test_signal_copy import packet
+
+    batch = [packet(clientEventId=f'large-{i}', label='x' * 200,
+                    kind='intent' if i % 2 else 'closed') for i in range(46)]
+    assert len(json.dumps(batch).encode()) > 16384
+    headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    assert call(server, '/capture/signals', 'POST', batch)[0] == 401
+    status, raw = call(server, '/capture/signals', 'POST', batch, headers)
+    assert status == 202
+    assert len(json.loads(raw)['results']) == 46
+    assert not server.controller.signal_copy.armed
+    assert server.controller.signal_copy.db.execute('SELECT count(*) FROM signals').fetchone()[0] == 46
+    assert call(server, '/capture/signals', 'POST', 'x' * (1024 * 1024), headers)[0] == 413
+    assert call(server, '/capture/signals', 'POST', batch,
+                {**headers, 'Origin': 'http://127.0.0.1:8765'})[0] == 401
+    assert call(server, '/api/start', 'POST', batch,
+                {'X-Session-Token': 'test-session'})[0] == 413
+
+
+def test_disarmed_signal_is_captured_and_no_broker_call_occurs(server):
+    from tests.dashboard.test_signal_copy import packet
+
+    class Forbidden:
+        connection = SimpleNamespace(session_expires_at=None, account_id='123')
+
+        def __getattr__(self, name):
+            raise AssertionError(f'Broker call {name} attempted while signal copying is off')
+
+    server.controller.api = Forbidden()
+    server.controller.connection = 'connected'
+    headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    status, raw = call(server, '/capture/signals', 'POST', [packet()], headers)
+    result = json.loads(raw)
+    assert status == 202 and result['forwarded_to_tradingbox'] is False
+    assert result['results'][0]['status'] == 'held' and 'off' in result['results'][0]['reason']
+    status, raw = call(server, '/api/signal-copy-events', headers={'X-Session-Token': 'test-session'})
+    assert status == 200 and json.loads(raw)['events'][0]['clientEventId'] == 'event-one'
+    assert call(server, '/api/signal-copy-events')[0] == 401
+    server.controller.api = None
+
+
+def test_shutdown_is_session_authenticated_and_explicit(server):
+    from threading import Event
+    stopped = Event()
+    server.shutdown = stopped.set
+    headers = {'X-Session-Token': 'test-session'}
+    assert call(server, '/api/shutdown', 'POST', {})[0] == 401
+    assert not stopped.is_set()
+    assert call(server, '/api/shutdown', 'POST', {}, headers)[0] == 200
+    assert stopped.wait(1)
+    assert not server.controller.running
+
+
+def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_source(server):
+    from tests.capture.test_relay_store import envelope
+    from tests.dashboard.test_signal_copy import Broker, config, packet
+    headers = {'X-Session-Token': 'test-session'}
+    assert call(server, '/api/signal-copy-settings')[0] == 401
+    assert call(server, '/capture/signals', 'POST', [packet()])[0] == 401
+    controller = server.controller
+    controller.interactive_copying = True
+    broker = Broker()
+    broker.close = lambda: None
+    controller.api = broker
+    controller.connection = 'connected'
+    controller.native.demo_verified = False
+    broker.connection = SimpleNamespace(account_id=controller.selected)
+    settings = config(destination_account=controller.selected)
+    assert call(server, '/api/signal-copy-settings', 'POST', settings, headers)[0] == 200
+    assert not controller.signal_copy.armed
+    status, raw = call(server, '/api/signal-copy-settings', headers=headers)
+    assert status == 200 and json.loads(raw)['live'] is False
+    assert call(server, '/api/signal-copying', 'POST', {'enabled': True}, headers)[0] == 200
+    assert controller.signal_copy.armed
+    relay_headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    assert call(server, '/relay/logs', 'POST', envelope(), relay_headers)[0] == 202
+    assert not broker.calls
+    signal = packet()
+    status, body = call(server, '/capture/signals', 'POST', [signal], relay_headers)
+    assert status == 202 and json.loads(body)['results'][0]['status'] == 'accepted'
+    assert len(broker.calls) == 1
+    assert controller.api is broker  # Copying reuses the existing authenticated owner.
+    status, body = call(server, '/capture/signals', 'POST', [signal], relay_headers)
+    assert json.loads(body)['results'][0]['duplicate'] and len(broker.calls) == 1
+    assert call(server, '/capture/signals', 'POST', [packet()], {**relay_headers, 'Origin': 'http://127.0.0.1:8765'})[0] == 401
+    assert call(server, '/api/stop', 'POST', {}, headers)[0] == 200
+    assert not controller.signal_copy.armed
+
+
+def test_capture_start_route_is_authenticated_and_ignores_destination_selection(server):
+    assert call(server, '/api/capture/start', 'POST', {})[0] == 401
+    before = server.controller.selected
+    code, _ = call(server, '/api/capture/start', 'POST', {'account_id': 'unrelated'}, {'X-Session-Token': 'test-session'})
+    assert code == 200 and server.controller.running
+    assert server.controller.selected == before and server.controller.api is None
+
+
+def test_dashboard_stream_needs_a_session_before_it_streams(server):
+    assert call(server, "/api/stream")[0] == 401
+    assert call(server, "/api/stream", headers={"Origin": "https://attacker.example"})[0] == 403
+
+
+def test_dashboard_sections_cover_every_panel_the_shell_used_to_poll(server):
+    sections = Handler.dashboard_sections(server.controller, [])
+    assert set(sections) == {"status", "events", "capture_events", "mappings", "broker_profiles"}
+    assert sections["status"]["version"] and "account_id" in sections["mappings"]
+    assert isinstance(sections["capture_events"]["events"], list)
+    assert sections["broker_profiles"] == {"profiles": [], "limit": 5}
+
+
+def test_status_digest_ignores_only_the_advancing_clock(server):
+    first = Handler.dashboard_sections(server.controller, [])["status"]
+    second = {**first, "server_time": "2099-01-01T00:00:00+00:00"}
+    assert Handler.section_digest("status", first) == Handler.section_digest("status", second)
+    assert Handler.section_digest("status", {**first, "running": not first["running"]}) \
+        != Handler.section_digest("status", first)
+
+
+def test_section_digests_are_stable_across_two_builds_without_new_evidence(server):
+    first = Handler.dashboard_sections(server.controller, [])
+    second = Handler.dashboard_sections(server.controller, [])
+    assert first["status"]["server_time"] != "" and set(first) == set(second)
+    for name in first:
+        assert Handler.section_digest(name, first[name]) == Handler.section_digest(name, second[name]), name
+
+
+def test_every_action_wakes_the_stream_so_the_shell_never_polls(server):
+    headers = {"X-Session-Token": "test-session"}
+    before = server.controller.native_store.revision
+    assert call(server, "/api/capture/start", "POST", {}, headers)[0] == 200
+    assert server.controller.native_store.revision > before
+
+
+def test_dashboard_stream_pushes_only_changed_sections(settings, tmp_path):
+    from datetime import UTC, datetime
+    from http.client import HTTPConnection
+    from socket import AF_INET, SOCK_STREAM, socket
+    from threading import Thread
+
+    from matchtrader.capture.event import CaptureEvent
+
+    controller = DashboardController(settings, tmp_path / 'stream-data')
+    actual = DashboardHTTPServer(('127.0.0.1', 0), controller, tmp_path, '')
+    worker = Thread(target=actual.serve_forever, daemon=True)
+    worker.start()
+    client = HTTPConnection('127.0.0.1', actual.server_port, timeout=3)
+
+    def loopback_only(address, timeout, source_address):
+        assert address == ('127.0.0.1', actual.server_port)
+        connection = socket(AF_INET, SOCK_STREAM)
+        connection.settimeout(timeout)
+        assert connection.connect_ex(address) == 0
+        return connection
+
+    client._create_connection = loopback_only
+
+    def frame(response):
+        line = response.readline()
+        assert response.readline() == b'\n'
+        return line
+
+    try:
+        client.request('GET', '/api/stream')
+        assert client.getresponse().status == 401
+        client.close()
+        client.request('GET', '/api/stream', headers={'X-Session-Token': actual.session_token})
+        response = client.getresponse()
+        assert response.status == 200 and response.getheader('Content-Type').startswith('text/event-stream')
+        first = json.loads(frame(response).decode().removeprefix('data: '))
+        assert set(first) == {'revision', 'status', 'events', 'capture_events', 'mappings', 'broker_profiles'}
+        assert isinstance(first['revision'], int) and first['status']['signal_copying'] is False
+        # A wake without new evidence only heartbeats: server_time alone never forces a resend.
+        controller.native_store.notify_stream()
+        assert frame(response) == b': heartbeat\n'
+        controller.native_store.record(CaptureEvent(event_id='stream-1', machine='test', connection_id='test',
+            account_id='source', emitted_at=datetime.now(UTC), kind='POSITION', symbol='EURUSD'))
+        pushed = json.loads(frame(response).decode().removeprefix('data: '))
+        assert pushed['revision'] > first['revision']
+        assert pushed['capture_events']['events'][0]['event_id'] == 'stream-1'
+        assert 'broker_profiles' not in pushed and 'events' not in pushed
+        response.close()
+    finally:
+        client.close()
+        actual.shutdown()
+        actual.server_close()
+        worker.join(timeout=3)
+        controller.close()

@@ -2,10 +2,13 @@
 
 import argparse
 import os
+import threading
+import time
 from pathlib import Path
 
 from dotenv import dotenv_values
 
+from ..capture.lifecycle import stopping
 from ..capture.route import RouteConfig
 from ..capture.tradingbox_forwarder import TradingBoxForwarder
 from ..capture.ws_ingress import CaptureWebSocketServer
@@ -17,6 +20,7 @@ from .server import DashboardHTTPServer
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stop-file", type=Path, help="Local launcher shutdown signal")
     parser.add_argument("--env", type=Path, default=Path(".env"))
     parser.add_argument("--ws-port", type=int, help="Native WebSocket port; 0 disables (default 8767)")
     parser.add_argument("--port", type=int, default=8765)
@@ -55,6 +59,7 @@ def main(argv=None):
         route=RouteConfig.model_validate_json(args.route.read_text()) if args.route else None,
         csv_limit=args.csv_limit,
         interactive_copying=True,
+        p01_log_path=env.get('MTR_P01_LOG_PATH') or None,
     )
     controller.broker_profiles = BrokerProfiles(profile_settings, controller, names=load_profile_names(args.env))
     controller.tradingbox_forwarder = TradingBoxForwarder(
@@ -72,6 +77,12 @@ def main(argv=None):
                 f"Dashboard ready: http://127.0.0.1:{server.server_port} (capture stopped; no broker orders)",
                 flush=True,
             )
+            if args.stop_file:
+                def watch_stop():
+                    while not stopping(args.stop_file):
+                        time.sleep(0.25)
+                    server.shutdown()
+                threading.Thread(target=watch_stop, daemon=True).start()
             server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
