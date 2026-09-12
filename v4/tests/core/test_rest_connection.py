@@ -205,7 +205,28 @@ def test_mutation_timeout_not_retried(api_factory):
     with pytest.raises(UnknownOutcomeError) as error:
         api.open_position(instrument="EURUSD", orderSide="BUY", volume=0.01)
     assert "credentials" not in str(error.value)
+    assert str(error.value) == "Mutation transport failure: outcome unknown; reconcile before retry"
     assert sum(r.url.path.endswith("/position/open") for r in seen) == 1
+    reason = error.value.reason
+    assert reason["origin"] == "transport"
+    assert "ReadTimeout" in reason["summary"]
+    assert reason["code"] and reason["evidence"]
+
+
+def test_mutation_unreadable_response_carries_a_local_reason(api_factory):
+    # The wire succeeded - a complete HTTP response came back - only parsing it as JSON
+    # failed. That is our own code, not a wire failure, so it must be origin='local', never
+    # 'transport': transport must mean the wire and nothing else.
+    api, _ = api_factory(
+        lambda r: httpx.Response(200, text="not json") if r.url.path.endswith("/position/open") else None
+    )
+    with pytest.raises(UnknownOutcomeError) as error:
+        api.open_position(instrument="EURUSD", orderSide="BUY", volume=0.01)
+    assert str(error.value) == "Mutation returned an unreadable response; reconcile before retry"
+    reason = error.value.reason
+    assert reason["origin"] == "local"
+    assert reason["origin"] and reason["code"] and reason["evidence"]
+    assert "JSON" in reason["evidence"]
 
 
 def test_plaintext_errors_do_not_leak_tokens(api_factory):
@@ -218,6 +239,48 @@ def test_plaintext_errors_do_not_leak_tokens(api_factory):
         api.balance()
     assert error.value.status_code == 410
     assert "session-test" not in str(error.value)
+    assert str(error.value) == "HTTP 410 from Match-Trader"
+    reason = error.value.reason
+    assert reason["origin"] == "broker"
+    assert reason["code"] == "HTTP 410"
+    assert reason["body_captured"] is False
+    assert "session-test" not in str(reason)
+
+
+def test_rejection_body_reason_carries_broker_message_without_credentials(api_factory):
+    body = {
+        "status": "REJECTED",
+        "errorMessage": "Not enough free margin",
+        "nativeCode": "MARGIN_001",
+        "password": "hunter2",
+        "authToken": "should-not-appear-verbatim",
+    }
+    api, _ = api_factory(
+        lambda r: httpx.Response(400, json=body) if r.url.path.endswith("/balance") else None
+    )
+    with pytest.raises(APIError) as error:
+        api.balance()
+    assert str(error.value) == "HTTP 400 from Match-Trader"
+    reason = error.value.reason
+    assert reason["origin"] == "broker"
+    assert reason["code"] == "MARGIN_001"
+    assert reason["summary"] == "Not enough free margin"
+    assert "hunter2" not in str(reason)
+    assert "password" not in str(reason)
+
+
+def test_business_rejection_reason_reads_status_reply_fields(api_factory):
+    body = {"status": "REJECTED", "errorMessage": "Instrument closed", "nativeCode": "CLOSED"}
+    api, _ = api_factory(
+        lambda r: httpx.Response(200, json=body) if r.url.path.endswith("/balance") else None
+    )
+    with pytest.raises(APIError) as error:
+        api.balance()
+    assert str(error.value) == "Operation did not report OK; inspect broker state before continuing"
+    reason = error.value.reason
+    assert reason["origin"] == "broker"
+    assert reason["code"] == "CLOSED"
+    assert reason["summary"] == "Instrument closed"
 
 
 def test_writes_disabled_before_network(api_factory, settings):

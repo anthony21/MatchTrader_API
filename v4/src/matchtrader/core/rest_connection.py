@@ -21,6 +21,7 @@ from .errors import (
     WritesDisabledError,
 )
 from .rate_limiter import RateLimiter
+from .reason import broker_reason, local_reason, transport_reason
 
 
 class RestConnection(BaseConnection):
@@ -96,10 +97,11 @@ class RestConnection(BaseConnection):
                 method, base + "/" + path.lstrip("/"), json=body, params=params, headers=headers,
                 **({"extensions": {"trace": trace}} if write and active() else {})
             )
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
             if write:
                 raise UnknownOutcomeError(
-                    "Mutation transport failure: outcome unknown; reconcile before retry"
+                    "Mutation transport failure: outcome unknown; reconcile before retry",
+                    reason=transport_reason(exc),
                 ) from None
             raise APIError("Request transport failure") from None
         if write:
@@ -107,8 +109,16 @@ class RestConnection(BaseConnection):
         if response.status_code == 401:
             raise AuthenticationError("Authentication expired or rejected (401)")
         if response.is_error or response.is_redirect:
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = None
             # Never echo plaintext errors: the upstream body can contain sensitive request data.
-            raise APIError(f"HTTP {response.status_code} from Match-Trader", response.status_code)
+            raise APIError(
+                f"HTTP {response.status_code} from Match-Trader",
+                response.status_code,
+                reason=broker_reason(response.status_code, error_body),
+            )
         if not response.content:
             if (
                 response.status_code == 204
@@ -120,10 +130,16 @@ class RestConnection(BaseConnection):
             return None
         try:
             data = response.json()
-        except ValueError:
+        except ValueError as exc:
             if write:
+                # The wire succeeded - a complete HTTP response came back - only parsing it
+                # failed. That is our own code, not a wire failure: origin='local', never
+                # 'transport'. The outcome stays honestly unconfirmed either way.
                 raise UnknownOutcomeError(
-                    "Mutation returned an unreadable response; reconcile before retry"
+                    "Mutation returned an unreadable response; reconcile before retry",
+                    reason=local_reason(
+                        exc, evidence="broker returned a complete response that failed JSON parsing"
+                    ),
                 ) from None
             raise ProtocolError("Expected a JSON response") from None
         history_full = (
@@ -133,7 +149,10 @@ class RestConnection(BaseConnection):
             and isinstance(data.get("operations"), list)
         )
         if isinstance(data, dict) and isinstance(data.get("status"), str) and data["status"] != "OK" and not history_full:
-            raise APIError("Operation did not report OK; inspect broker state before continuing")
+            raise APIError(
+                "Operation did not report OK; inspect broker state before continuing",
+                reason=broker_reason(response.status_code, data),
+            )
         return data
 
     def _adopt(self, data, identity=""):

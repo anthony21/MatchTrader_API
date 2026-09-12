@@ -76,6 +76,202 @@ def test_uncertain_write_never_retried_after_restart(tmp_path, route, event, bro
     router.store.close()
 
 
+def test_broker_rejection_reason_is_recorded_never_as_bare_unknown(tmp_path, route, event, broker):
+    from matchtrader.core.errors import APIError
+
+    router = configured(tmp_path, route)
+    reason = {"origin": "broker", "code": "MARGIN_001", "summary": "Not enough free margin",
+              "evidence": "broker write response"}
+
+    def rejected(**kwargs):
+        broker.calls.append(("CREATE", kwargs))
+        raise APIError("Operation did not report OK", reason=reason)
+
+    broker.create_pending_order = rejected
+    result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    assert result["reason"] == "Write outcome requires broker reconciliation; not retried"
+    row = router.store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert row["origin"] == "broker"
+    assert row["code"] == "MARGIN_001"
+    assert row["summary"] == "Not enough free margin"
+    assert router.store.trade(result["trade_id"])["state"] == "uncertain"
+    router.store.close()
+
+
+def test_unlabeled_exception_still_records_an_investigable_reason(tmp_path, route, event, broker):
+    router = configured(tmp_path, route)
+
+    def broken(**kwargs):
+        broker.calls.append(("CREATE", kwargs))
+        raise RuntimeError("boom, no .reason attribute here")
+
+    broker.create_pending_order = broken
+    result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    assert result["reason"] == "Write outcome requires broker reconciliation; not retried"
+    row = router.store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    # No structured evidence exists for this bare exception: origin='transport' would assert
+    # a wire cause that was never established, so it must be labelled 'unconfirmed' instead.
+    assert row["origin"] == "unconfirmed"
+    assert "RuntimeError" in row["summary"]
+    assert row["origin"] and row["code"] and row["evidence"]
+    assert row["summary"] != "unknown"
+    router.store.close()
+
+
+def test_string_reason_attribute_never_crashes_the_uncertain_transition(tmp_path, route, event, broker):
+    # urllib.error.URLError and ssl.SSLError both carry a `.reason` that is a *string*, not
+    # a dict. getattr(exc, "reason", None) is duck-typed, so a naive fallback would try
+    # reason.get(...) on a str, raise AttributeError, and skip the uncertain transition
+    # entirely - losing the record. Reproduced here without importing urllib/ssl directly.
+    class FakeURLError(Exception):
+        def __init__(self, reason):
+            super().__init__(reason)
+            self.reason = reason
+
+    def broken(**kwargs):
+        broker.calls.append(("CREATE", kwargs))
+        raise FakeURLError("Name or service not known")
+
+    router = configured(tmp_path, route)
+    broker.create_pending_order = broken
+    result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    assert result["reason"] == "Write outcome requires broker reconciliation; not retried"
+    row = router.store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert row is not None
+    assert row["origin"] and row["code"] and row["evidence"]
+    assert "Name or service not known" in row["summary"]
+    trade = router.store.trade(result["trade_id"])
+    assert trade["state"] == "uncertain"
+    attempt = router.store.db.execute(
+        "SELECT state FROM attempts WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert attempt["state"] == "uncertain"
+    router.store.close()
+
+
+def test_local_check_failure_after_broker_ok_is_recorded_with_local_origin(tmp_path, route, event, broker):
+    # The broker replied OK but with neither an order nor a position id - a router-raised
+    # RuntimeError, not a wire failure. It must be labelled origin='local', not 'transport',
+    # and must keep the RuntimeError's own message rather than discarding it.
+    from matchtrader.models.operation import Operation
+
+    router = configured(tmp_path, route)
+    broker.create_pending_order = lambda **kwargs: Operation(status="OK")
+    result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    row = router.store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert row["origin"] == "local"
+    assert row["code"] == "RuntimeError"
+    assert "Broker identity missing after submission" in row["summary"]
+    router.store.close()
+
+
+def test_local_persistence_failure_after_broker_success_is_recorded_as_local(
+    tmp_path, route, event, broker
+):
+    # The broker already confirmed the write; only our own store.update() call afterward
+    # fails. That must be labelled origin='local', never 'transport' - transport must mean
+    # the wire and nothing else.
+    router = configured(tmp_path, route)
+    original_update = router.store.update
+    calls = []
+
+    def flaky_update(identity, **values):
+        calls.append(values)
+        if len(calls) == 2:
+            raise RuntimeError("simulated local persistence failure")
+        return original_update(identity, **values)
+
+    router.store.update = flaky_update
+    result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    row = router.store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert row["origin"] == "local"
+    assert row["code"] == "RuntimeError"
+    assert "simulated local persistence failure" in row["summary"]
+    router.store.close()
+
+
+def test_reason_construction_failure_still_transitions_to_uncertain_and_logs(
+    tmp_path, route, event, broker, caplog
+):
+    # Building the reason (e.g. calling str() on the exception) must not be able to escape
+    # and skip the uncertain state transitions - the user's rule that a diagnostic failure
+    # must never leave a trade stuck, and must never be silently swallowed either.
+    class ExplodingStr(Exception):
+        def __str__(self):
+            raise RuntimeError("str() blew up")
+
+    def broken(**kwargs):
+        broker.calls.append(("CREATE", kwargs))
+        raise ExplodingStr()
+
+    router = configured(tmp_path, route)
+    broker.create_pending_order = broken
+    with caplog.at_level("ERROR", logger="matchtrader.capture.router"):
+        result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    assert result["reason"] == "Write outcome requires broker reconciliation; not retried"
+    trade = router.store.trade(result["trade_id"])
+    assert trade["state"] == "uncertain"
+    attempt = router.store.db.execute(
+        "SELECT state FROM attempts WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone()
+    assert attempt["state"] == "uncertain"
+    assert router.store.db.execute(
+        "SELECT 1 FROM outcome_reasons WHERE trade_id=?", (result["trade_id"],),
+    ).fetchone() is None
+    assert any("Outcome reason not recorded" in r.message for r in caplog.records)
+    router.store.close()
+
+
+def test_reason_insert_failure_is_logged_with_trade_action_and_reason_origin(
+    tmp_path, route, event, broker, caplog
+):
+    # A failed insert must never be a silent pass: the explanation has to survive somewhere,
+    # correlated to the trade/action and carrying the reason's own origin/code, even when the
+    # row itself is lost.
+    from matchtrader.core.errors import APIError
+
+    router = configured(tmp_path, route)
+    reason = {"origin": "broker", "code": "MARGIN_001", "summary": "Not enough free margin",
+              "evidence": "broker write response"}
+
+    def rejected(**kwargs):
+        broker.calls.append(("CREATE", kwargs))
+        raise APIError("Operation did not report OK", reason=reason)
+
+    broker.create_pending_order = rejected
+
+    def broken_record_reason(*args, **kwargs):
+        raise ValueError("simulated storage failure")
+
+    router.store.record_reason = broken_record_reason
+    with caplog.at_level("ERROR", logger="matchtrader.capture.router"):
+        result = router.receive(event.model_dump(), broker, "demo")
+    assert result["status"] == "uncertain"
+    trade = router.store.trade(result["trade_id"])
+    assert trade["state"] == "uncertain"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(
+        result["trade_id"] in m and "MARGIN_001" in m and "broker" in m for m in messages
+    )
+    router.store.close()
+
+
 @pytest.mark.parametrize(
     "change",
     [

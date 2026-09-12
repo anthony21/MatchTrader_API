@@ -141,6 +141,29 @@ def test_mapping_summary_includes_human_trade_context_without_changing_identity(
     store.close()
 
 
+def test_snapshot_exposes_outcome_reasons_ordered_and_keeps_every_existing_key(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    before = set(store.mapping_view('demo')[0])
+    store.record_reason(identity, 'CREATE', 1, 'uncertain', {
+        'origin': 'transport', 'code': 'transport',
+        'summary': 'Outcome unconfirmed after TimeoutError', 'evidence': 'see the raw relay archive',
+    })
+    store.record_reason(identity, 'EDIT:run:2', 1, 'accepted', {
+        'origin': 'broker', 'code': 'MARGIN_001', 'summary': 'Not enough free margin',
+        'evidence': 'broker write response',
+    })
+    snapshot = store.mapping_view('demo')[0]
+    assert before <= set(snapshot)
+    reasons = snapshot['outcome_reasons']
+    assert [r['action_key'] for r in reasons] == ['CREATE', 'EDIT:run:2']
+    assert reasons[0]['origin'] == 'transport'
+    assert reasons[1]['origin'] == 'broker'
+    assert reasons[1]['code'] == 'MARGIN_001'
+    store.close()
+
+
 def test_evidence_tables_exist_for_a_single_schema_bump(tmp_path):
     store = CaptureStore(tmp_path)
     tables = {r[0] for r in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

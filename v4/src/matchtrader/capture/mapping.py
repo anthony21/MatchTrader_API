@@ -281,10 +281,12 @@ class MappingLedger:
             "SELECT * FROM action_history WHERE trade_id=? ORDER BY updated_at DESC", (identity,))]
         for action in actions:
             action['request'] = json.loads(action['request'])
+        outcome_reasons = [dict(r) for r in self.db.execute(
+            "SELECT * FROM outcome_reasons WHERE trade_id=? ORDER BY at", (identity,))]
         return {'schema_version': MAPPING_SCHEMA_VERSION, 'trade_id': identity, 'broker': self.broker,
                 'source_scope': json.loads(trade['scope']),
                 'symbol': trade.get('symbol', ''), 'side': trade.get('side', ''), 'source': trade.get('source', 'UNKNOWN'),
                 'account_id': trade['destination'], 'state': trade['state'], 'mapping_status': status,
                 'reasons': reasons, 'links': links, 'fills': fills, 'quantities': quantities,
                 'actions': actions, 'destination_observations': destination_observations,
-                'updated_at': trade['updated_at']}
+                'outcome_reasons': outcome_reasons, 'updated_at': trade['updated_at']}

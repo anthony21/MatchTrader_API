@@ -112,6 +112,47 @@ def test_unknown_dispatch_outcome_holds_and_never_retries():
     assert not api.positions
 
 
+def test_reason_missing_optional_summary_key_still_holds_instead_of_raising():
+    # A reason dict can legally carry only origin/code/evidence (summary is optional).
+    # reason["summary"] used to raise KeyError before the HELD transition ran, leaving the
+    # watcher stuck in DISPATCHING. It must still reach HELD.
+    class Tagged(Exception):
+        def __init__(self):
+            super().__init__("rejected")
+            self.reason = {"origin": "broker", "code": "REJECTED", "evidence": "broker write response"}
+
+    class FailingAPI(FakeAPI):
+        def open_position(self, **kwargs):
+            raise Tagged()
+
+    api = FailingAPI()
+    watcher = StopLimitWatcher(api, buy_plan(), quotes=lambda: [quote(99.98, 100.00)])
+    assert watcher.poll() is State.HELD
+    assert watcher.state is State.HELD
+    assert "broker/REJECTED" in watcher.reason
+    assert watcher.poll() is State.HELD
+    assert not api.positions
+
+
+def test_journal_failure_after_broker_success_does_not_mislabel_the_outcome_as_transport():
+    # The broker already confirmed the fill; only the journal callback fails afterward (the
+    # DISPATCHING commit's own journal write must still succeed). That must never be reported
+    # as an unverified dispatch outcome (which would misrepresent a confirmed fill as
+    # unconfirmed) nor labelled 'transport' - it is our own bookkeeping.
+    api = FakeAPI()
+
+    def flaky_journal(entry):
+        if entry["state"] != "dispatching":
+            raise RuntimeError("disk full")
+
+    watcher = StopLimitWatcher(
+        api, buy_plan(), quotes=lambda: [quote(99.98, 100.00)], journal=flaky_journal
+    )
+    assert watcher.poll() is State.FILLED
+    assert watcher.state is State.FILLED
+    assert api.positions
+
+
 def test_expiry_before_trigger_sends_nothing():
     api = FakeAPI()
     ticks = iter([0, 61])  # The constructor stamps the start; the poll reads the elapsed clock.

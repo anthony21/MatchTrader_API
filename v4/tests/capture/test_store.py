@@ -258,6 +258,114 @@ def test_observe_closed_does_not_double_count_one_close_respelled(tmp_path, even
     store.close()
 
 
+def test_record_reason_writes_and_is_idempotent_per_attempt(tmp_path, event):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    reason = {'origin': 'broker', 'code': 'MARGIN_001', 'summary': 'Not enough free margin',
+              'evidence': 'broker write response'}
+    store.record_reason(identity, 'CREATE', 1, 'uncertain', reason)
+    store.record_reason(identity, 'CREATE', 1, 'uncertain', reason)
+    saved = store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=? AND action_key='CREATE' AND attempt=1", (identity,),
+    ).fetchall()
+    assert len(saved) == 1
+    assert saved[0]['origin'] == 'broker'
+    assert saved[0]['code'] == 'MARGIN_001'
+    assert saved[0]['summary'] == 'Not enough free margin'
+    assert saved[0]['evidence'] == 'broker write response'
+    assert saved[0]['outcome'] == 'uncertain'
+    assert saved[0]['at']
+    store.close()
+
+
+def test_record_reason_logs_a_divergent_second_reason_instead_of_silently_dropping_it(
+    tmp_path, event, caplog
+):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    first = {'origin': 'broker', 'code': 'MARGIN_001', 'summary': 'Not enough free margin',
+             'evidence': 'broker write response'}
+    second = {'origin': 'transport', 'code': 'transport',
+              'summary': 'Outcome unconfirmed after TimeoutError; broker state was not verified',
+              'evidence': 'see the raw relay archive for the write request that triggered this error'}
+    store.record_reason(identity, 'CREATE', 1, 'uncertain', first)
+    with caplog.at_level('WARNING', logger='matchtrader.capture.store'):
+        store.record_reason(identity, 'CREATE', 1, 'uncertain', second)
+    assert any('divergent' in r.message.lower() for r in caplog.records)
+    saved = store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=? AND action_key='CREATE' AND attempt=1", (identity,),
+    ).fetchall()
+    assert len(saved) == 1
+    assert saved[0]['origin'] == 'broker'
+    assert saved[0]['code'] == 'MARGIN_001'
+    store.close()
+
+
+def test_record_reason_stays_quiet_when_the_second_write_is_identical(tmp_path, event, caplog):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    reason = {'origin': 'broker', 'code': 'MARGIN_001', 'summary': 'Not enough free margin',
+              'evidence': 'broker write response'}
+    store.record_reason(identity, 'CREATE', 1, 'uncertain', reason)
+    with caplog.at_level('WARNING', logger='matchtrader.capture.store'):
+        store.record_reason(identity, 'CREATE', 1, 'uncertain', reason)
+    assert not caplog.records
+    store.close()
+
+
+@pytest.mark.parametrize('missing', ['origin', 'code', 'evidence'])
+def test_record_reason_refuses_a_contentless_row(tmp_path, event, missing):
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    reason = {'origin': 'broker', 'code': 'MARGIN_001', 'summary': '', 'evidence': 'broker write response'}
+    reason[missing] = ''
+    with pytest.raises(ValueError, match='origin, code and evidence'):
+        store.record_reason(row['trade_id'], 'CREATE', 1, 'uncertain', reason)
+    saved = store.db.execute("SELECT 1 FROM outcome_reasons WHERE trade_id=?", (row['trade_id'],))
+    assert not saved.fetchall()
+    store.close()
+
+
+@pytest.mark.parametrize('blank', ['origin', 'code', 'evidence'])
+def test_record_reason_refuses_a_whitespace_only_field(tmp_path, event, blank):
+    # A whitespace-only field is just as contentless as an empty string; the guard must
+    # strip before checking, not just check truthiness.
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    reason = {'origin': 'broker', 'code': 'MARGIN_001', 'summary': '', 'evidence': 'broker write response'}
+    reason[blank] = '   '
+    with pytest.raises(ValueError, match='origin, code and evidence'):
+        store.record_reason(row['trade_id'], 'CREATE', 1, 'uncertain', reason)
+    saved = store.db.execute("SELECT 1 FROM outcome_reasons WHERE trade_id=?", (row['trade_id'],))
+    assert not saved.fetchall()
+    store.close()
+
+
+def test_restart_recovery_records_an_interrupted_processing_reason(tmp_path, event):
+    # A crash mid-dispatch must not simply flip the attempt to uncertain with nothing to
+    # investigate: it must record why, without inventing a broker outcome it cannot know.
+    store = CaptureStore(tmp_path)
+    row, _ = store.record(event)
+    identity = row['trade_id']
+    assert store.claim(identity, 'CREATE')
+    store.close()
+
+    store = CaptureStore(tmp_path)
+    assert store.trade(identity)['state'] == 'uncertain'
+    saved = store.db.execute(
+        "SELECT * FROM outcome_reasons WHERE trade_id=? AND action_key='CREATE'", (identity,),
+    ).fetchone()
+    assert saved is not None
+    assert saved['origin'] == 'local'
+    assert identity in saved['evidence']
+    assert 'CREATE' in saved['evidence']
+    assert saved['summary'] and saved['summary'] != 'unknown'
+    store.close()
+
+
 def test_observe_closed_keeps_different_sized_closes_at_one_timestamp(tmp_path, event):
     store = CaptureStore(tmp_path)
     row, _ = store.record(event)

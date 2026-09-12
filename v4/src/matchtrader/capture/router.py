@@ -1,12 +1,25 @@
 """Serialized, at-most-once dispatch with explicit holds for ambiguous mappings."""
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from threading import RLock
 
+from ..core.reason import local_reason, unconfirmed_reason
 from ..version import EVENT_SCHEMA_VERSION
 from .dispatch_metrics import mark
 from .event import CaptureEvent
+
+logger = logging.getLogger(__name__)
+
+
+def _unverified(message):
+    """A post-response check failed after the broker replied; never confuse this with a
+    wire failure. The RuntimeError carries its own `.reason` (origin='local') so the
+    generic except block in _dispatch keeps this exact message instead of discarding it."""
+    error = RuntimeError(message)
+    error.reason = local_reason(error)
+    return error
 
 
 class CaptureRouter:
@@ -192,13 +205,13 @@ class CaptureRouter:
             mark("attempt_commit")
             result = method(**kwargs)
             if result.status and result.status != "OK":
-                raise RuntimeError("Unrecognized broker status")
+                raise _unverified("Unrecognized broker status")
             if event.action in {"CANCEL", "CLOSE"} and result.status != "OK":
-                raise RuntimeError("Explicit completion status required")
+                raise _unverified("Explicit completion status required")
             values = {"state": "pending" if event.order_type != "MARKET" else "open"}
             if event.action == "CREATE":
                 if not result.orderId and not result.positionId:
-                    raise RuntimeError("Broker identity missing after submission")
+                    raise _unverified("Broker identity missing after submission")
                 values["broker_order_id"] = result.orderId or ""
                 if result.positionId:
                     values["broker_position_id"] = result.positionId
@@ -214,10 +227,47 @@ class CaptureRouter:
                     values.update(state="resolved", resolved_at=datetime.now(UTC).isoformat())
                 else:
                     values["state"] = "pending" if order_id in pending and lots == position.volume else "open"
-            self.store.update(identity, **values)
-            self.store.finish(identity, action_key, "accepted")
+            try:
+                self.store.update(identity, **values)
+                self.store.finish(identity, action_key, "accepted")
+            except Exception as local_exc:
+                # The broker already confirmed the write above; anything raised from here on
+                # is our own persistence code, never the wire - it must never be mislabelled
+                # transport. Only attach a reason if one is not already present.
+                if not isinstance(getattr(local_exc, "reason", None), dict):
+                    local_exc.reason = local_reason(
+                        local_exc,
+                        evidence="broker accepted the write; local persistence of the accepted state failed",
+                    )
+                raise
             return "accepted", "Broker accepted the mapped action"
-        except Exception:
+        except Exception as exc:
+            # Reason construction AND the insert both live inside this one protective region:
+            # an exception whose own __str__ raises (built while forming the reason) must not
+            # escape and skip the state transitions below - it must instead fall through to
+            # the log statement, and the transitions must still run unconditionally.
+            reason = None
+            try:
+                candidate = getattr(exc, "reason", None)
+                if isinstance(candidate, dict) and all(
+                    candidate.get(k) for k in ("origin", "code", "evidence")
+                ):
+                    reason = candidate
+                else:
+                    # No structured evidence of where this failed (wire, broker or local):
+                    # asserting origin='transport' here would claim a cause never established.
+                    reason = unconfirmed_reason(exc, correlation=f"trade {identity} action {action_key}")
+                self.store.record_reason(identity, action_key, 1, "uncertain", reason)
+            except Exception as log_exc:
+                # The row may be lost, but the explanation must survive somewhere: log it,
+                # sanitized, correlated to the trade/action, rather than a silent pass.
+                logger.error(
+                    "Outcome reason not recorded for trade_id=%s action_key=%s origin=%s code=%s: %s",
+                    identity, action_key,
+                    reason.get("origin") if isinstance(reason, dict) else "unavailable",
+                    reason.get("code") if isinstance(reason, dict) else "unavailable",
+                    type(log_exc).__name__,
+                )
             self.store.update(identity, state="uncertain")
             self.store.finish(identity, action_key, "uncertain")
             return "uncertain", "Write outcome requires broker reconciliation; not retried"

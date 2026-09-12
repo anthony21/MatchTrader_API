@@ -1,5 +1,6 @@
 """Client-side STOP_LIMIT emulation; Match-Trader exposes only LIMIT, STOP and market."""
 
+import logging
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -9,7 +10,10 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from ..core.reason import local_reason, unconfirmed_reason
 from ..models.base import Record
+
+logger = logging.getLogger(__name__)
 
 
 class State(StrEnum):
@@ -147,17 +151,62 @@ class StopLimitWatcher:
                     response = self.api.open_position(
                         instrument=self.plan.instrument, orderSide=self.plan.orderSide,
                         volume=self.plan.volume, slPrice=self.plan.slPrice, tpPrice=self.plan.tpPrice)
-                    self.order_id = getattr(response, "positionId", None) or getattr(response, "orderId", None)
-                    return self._record(State.FILLED, "Filled at market within the limit price")
-                response = self.api.create_pending_order(
-                    instrument=self.plan.instrument, orderSide=self.plan.orderSide, type="LIMIT",
-                    volume=self.plan.volume, price=self.plan.limitPrice,
-                    slPrice=self.plan.slPrice, tpPrice=self.plan.tpPrice)
-                self.order_id = getattr(response, "orderId", None) or getattr(response, "id", None)
-                return self._record(State.WORKING, "Resting LIMIT placed after the trigger")
+                    order_id = getattr(response, "positionId", None) or getattr(response, "orderId", None)
+                    new_state, new_reason = State.FILLED, "Filled at market within the limit price"
+                else:
+                    response = self.api.create_pending_order(
+                        instrument=self.plan.instrument, orderSide=self.plan.orderSide, type="LIMIT",
+                        volume=self.plan.volume, price=self.plan.limitPrice,
+                        slPrice=self.plan.slPrice, tpPrice=self.plan.tpPrice)
+                    order_id = getattr(response, "orderId", None) or getattr(response, "id", None)
+                    new_state, new_reason = State.WORKING, "Resting LIMIT placed after the trigger"
             except Exception as error:
-                # Outcome unknown: reconcile against the broker before any resubmission.
-                return self._record(State.HELD, f"Dispatch outcome unknown ({type(error).__name__})")
+                # Outcome unknown: reconcile against the broker before any resubmission. Prefer
+                # a structured reason the error already carries (e.g. APIError.reason); fall back
+                # to a phase-unconfirmed reason so this is never a bare, uninvestigable "unknown" -
+                # and never claims a wire cause ('transport') that was never established.
+                reason = getattr(error, "reason", None)
+                if not isinstance(reason, dict) or not all(
+                    reason.get(k) for k in ("origin", "code", "evidence")
+                ):
+                    correlation = f"{self.plan.instrument}/{self.plan.orderSide} stop-limit watcher"
+                    reason = unconfirmed_reason(error, correlation=correlation)
+                # A reason dict can legally omit optional fields (e.g. summary); formatting this
+                # diagnostic message must never itself prevent the HELD transition below.
+                try:
+                    detail = reason.get("summary") or reason.get("evidence") or "no further detail available"
+                    held = f"Dispatch outcome unverified ({reason['origin']}/{reason['code']}): {detail}"
+                except Exception:
+                    held = (
+                        "Dispatch outcome unverified: diagnostic formatting failed; "
+                        "reconcile before resubmission"
+                    )
+                try:
+                    return self._record(State.HELD, held)
+                except Exception as journal_error:
+                    # _record sets self.state before invoking the journal callback, so the HELD
+                    # transition already happened; only the journal write itself failed.
+                    logger.error(
+                        "Journal write failed for %s/%s while recording HELD: %s",
+                        self.plan.instrument, self.plan.orderSide, type(journal_error).__name__,
+                    )
+                    return self.state
+            # The broker already confirmed the write above; anything raised from here on (the
+            # journal write inside _record) is our own local bookkeeping, never a wire failure,
+            # and must never downgrade or hide the outcome the broker already confirmed.
+            self.order_id = order_id
+            try:
+                return self._record(new_state, new_reason)
+            except Exception as journal_error:
+                diagnostic = local_reason(
+                    journal_error, evidence="broker accepted the write; local journal update failed"
+                )
+                logger.error(
+                    "Journal write failed for %s/%s after broker confirmation (state=%s) code=%s: %s",
+                    self.plan.instrument, self.plan.orderSide, new_state.value,
+                    diagnostic["code"], diagnostic["summary"] or diagnostic["evidence"],
+                )
+                return self.state
 
     def run(self, *, interval=1.0, sleep=time.sleep):
         """Poll until terminal. The shared rate limiter also paces every quote read."""

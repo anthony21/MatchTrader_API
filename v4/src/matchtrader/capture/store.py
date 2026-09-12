@@ -7,6 +7,7 @@ committed before any network write; a crash leaves it uncertain, never retryable
 import csv
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -18,6 +19,8 @@ from .event import CaptureEvent
 from .mapping import MappingLedger
 from .meaning import meaning
 from .raw_log import RawLog
+
+logger = logging.getLogger(__name__)
 
 
 def _clean_broker_time(value):
@@ -76,9 +79,24 @@ class CaptureStore:
         except Exception:
             self.db.close()
             raise
-        with self.db:
+        with self.lock, self.db:
+            # Capture which attempts are being flipped before the UPDATE erases that fact.
+            interrupted = self.db.execute(
+                "SELECT trade_id, action_key FROM attempts WHERE state='dispatching'"
+            ).fetchall()
             self.db.execute("UPDATE trades SET state='uncertain' WHERE state='dispatching'")
             self.db.execute("UPDATE attempts SET state='uncertain' WHERE state='dispatching'")
+        for row in interrupted:
+            # A crash mid-dispatch never proves a broker outcome; record only what is durably
+            # known - this attempt was in flight when the process stopped - not a guess at
+            # what the broker did with it.
+            self.record_reason(row["trade_id"], row["action_key"], 1, "uncertain", {
+                "origin": "local",
+                "code": "InterruptedProcessing",
+                "summary": "Process restarted while this attempt was still dispatching; "
+                           "broker outcome not verified",
+                "evidence": f"durable attempt trade_id={row['trade_id']} action_key={row['action_key']}",
+            })
         self.export_error = False
         self.export_lock = Lock()
         self.export_dirty = Event()
@@ -276,6 +294,42 @@ class CaptureStore:
                     close_time=getattr(closed, 'time', None),
                     close_reason=getattr(closed, 'closeReason', None), at=now,
                 )
+
+    def record_reason(self, trade_id, action_key, attempt, outcome, reason):
+        """Persist why a dispatch attempt landed where it did. `reason` must carry a
+        non-empty origin, code and evidence - the user's rule that nothing may be
+        recorded as a bare unknown is enforced here, at the only place these rows are
+        written, rather than trusted to every caller. Idempotent on the attempt key."""
+        if (
+            not str(reason.get("origin") or "").strip()
+            or not str(reason.get("code") or "").strip()
+            or not str(reason.get("evidence") or "").strip()
+        ):
+            raise ValueError("Refusing to record an outcome reason without origin, code and evidence")
+        with self.lock, self.db:
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO outcome_reasons VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    trade_id, action_key, attempt, reason["origin"], outcome, reason["code"],
+                    reason.get("summary", ""), reason["evidence"], datetime.now(UTC).isoformat(),
+                ),
+            )
+            if cursor.rowcount == 0:
+                # First-writer-wins is correct for evidence, but silently discarding a
+                # *different* reason for the same attempt is itself a dead end - log it.
+                existing = self.db.execute(
+                    "SELECT origin,outcome,code,summary,evidence FROM outcome_reasons "
+                    "WHERE trade_id=? AND action_key=? AND attempt=?",
+                    (trade_id, action_key, attempt),
+                ).fetchone()
+                incoming = (
+                    reason["origin"], outcome, reason["code"], reason.get("summary", ""), reason["evidence"],
+                )
+                if existing and tuple(existing) != incoming:
+                    logger.warning(
+                        "Divergent outcome reason discarded for trade_id=%s action_key=%s attempt=%s: "
+                        "kept %s, discarded %s", trade_id, action_key, attempt, dict(existing), incoming,
+                    )
 
     def decision(self, seq, status, reason):
         with self.lock, self.db:

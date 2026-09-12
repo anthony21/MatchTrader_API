@@ -18,9 +18,10 @@ class ConnectionClosedError(MatchTraderError):
 
 
 class APIError(MatchTraderError):
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(self, message: str, status_code: int | None = None, *, reason: dict | None = None):
         super().__init__(message)
         self.status_code = status_code
+        self.reason = reason
 
 
 class UnknownOutcomeError(APIError):
