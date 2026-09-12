@@ -1,24 +1,10 @@
 <script setup>
 defineProps({ state: Object, selected: String, busy: Boolean })
-defineEmits(['update:selected', 'connect', 'start', 'stop', 'choose-login'])
+defineEmits(['start', 'stop'])
 </script>
 
 <template>
   <section class="controls card" aria-label="Account and bridge controls">
-    <button class="secondary" @click="$emit('choose-login')">Choose broker login</button>
-    <div class="account-field">
-      <label for="account">Trading account</label>
-      <select id="account" :value="selected" :disabled="busy || state.running"
-        @change="$emit('update:selected', $event.target.value)">
-        <option v-for="account in state.accounts" :key="account.id" :value="account.id">
-          {{ account.id }} · {{ account.verified ? 'Verified' : 'Configured' }}
-        </option>
-      </select>
-    </div>
-    <button class="secondary" :disabled="busy || state.running || !selected" @click="$emit('connect')">
-      Log in
-    </button>
-    <div class="control-divider"></div>
     <button class="primary" :disabled="busy || state.running || !selected" @click="$emit('start')">
       <span aria-hidden="true">▶</span> Start capture
     </button>

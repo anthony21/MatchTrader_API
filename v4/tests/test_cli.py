@@ -11,9 +11,9 @@ def test_help_needs_no_credentials(capsys):
 
 
 def test_invalid_environment_does_not_echo_secret(tmp_path, capsys, monkeypatch):
-    monkeypatch.delenv("MTR_PLATFORM_URL", raising=False)
+    monkeypatch.delenv("AQF_PLATFORM_URL", raising=False)
     env = tmp_path / ".env"
-    env.write_text("MTR_PLATFORM_URL=http://secret@example.com\nMTR_PASSWORD=hidden-password")
+    env.write_text("AQF_PLATFORM_URL=http://secret@example.com\nAQF_PASSWORD=hidden-password")
     assert main(["--env", str(env), "balance"]) == 2
     assert "hidden-password" not in capsys.readouterr().out
 

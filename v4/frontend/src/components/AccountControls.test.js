@@ -2,14 +2,34 @@ import { mount } from '@vue/test-utils'
 import { expect, test } from 'vitest'
 import AccountControls from './AccountControls.vue'
 
-test('account changes and start controls emit explicit actions', async () => {
+test('Start capture emits start and is disabled without a running service or a selected account', async () => {
   const wrapper = mount(AccountControls, { props: { selected: '123', busy: false,
-    state: { running: false, connection: 'disconnected', accounts: [{ id: '123' }, { id: '456' }] } } })
-  await wrapper.find('select').setValue('456')
-  expect(wrapper.emitted('update:selected')[0]).toEqual(['456'])
+    state: { running: false, connection: 'disconnected' } } })
   await wrapper.find('button.primary').trigger('click')
   expect(wrapper.emitted('start')).toHaveLength(1)
-  await wrapper.setProps({ state: { running: true, accounts: [{ id: '123' }] } })
-  expect(wrapper.find('select').element.disabled).toBe(true)
+  expect(wrapper.find('button.primary').element.disabled).toBe(false)
+  await wrapper.setProps({ state: { running: true, connection: 'connected' } })
   expect(wrapper.find('button.primary').element.disabled).toBe(true)
+  await wrapper.setProps({ state: { running: false, connection: 'disconnected' }, selected: '' })
+  expect(wrapper.find('button.primary').element.disabled).toBe(true)
+})
+
+test('Stop & disconnect emits stop and follows its own disabled rule', async () => {
+  const wrapper = mount(AccountControls, { props: { selected: '123', busy: false,
+    state: { running: false, connection: 'disconnected' } } })
+  expect(wrapper.find('button.secondary').element.disabled).toBe(true)
+  await wrapper.setProps({ state: { running: true, connection: 'connected' } })
+  expect(wrapper.find('button.secondary').element.disabled).toBe(false)
+  await wrapper.find('button.secondary').trigger('click')
+  expect(wrapper.emitted('stop')).toHaveLength(1)
+})
+
+test('login controls are gone from the component', () => {
+  const wrapper = mount(AccountControls, { props: { selected: '123', busy: false,
+    state: { running: false, connection: 'disconnected' } } })
+  expect(wrapper.find('select').exists()).toBe(false)
+  expect(wrapper.find('#account').exists()).toBe(false)
+  expect(wrapper.findAll('button').map(b => b.text())).not.toContain('Choose broker login')
+  expect(wrapper.findAll('button').map(b => b.text())).not.toContain('Log in')
+  expect(wrapper.find('.control-divider').exists()).toBe(false)
 })

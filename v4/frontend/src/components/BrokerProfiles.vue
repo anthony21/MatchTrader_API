@@ -8,6 +8,7 @@ const profiles = ref([]), busy = ref([]), error = ref('')
 const loginProfile = ref(''), tradingAccount = ref('')
 const selectedProfile = computed(() => profiles.value.find(p => p.profile === loginProfile.value))
 const loginStatus = computed(() => selectedProfile.value?.login_status || 'disconnected')
+const sessionReady = computed(() => loginStatus.value === 'connected' && selectedProfile.value?.connection === 'connected')
 watch(loginProfile, () => { tradingAccount.value = '' })
 let disposed = false, timer
 function apply(value) {
@@ -55,7 +56,7 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
         <label>Platform<select v-model="loginProfile" aria-label="Platform" :disabled="!profiles.length">
           <option v-for="p in profiles" :key="p.profile" :value="p.profile">{{ p.label || p.profile }}</option>
         </select></label>
-        <button :disabled="!loginProfile || busy.includes(loginProfile) || loginStatus === 'connected'" @click="act(loginProfile, loginStatus === 'disconnected' ? 'login' : 'refresh_login')">{{ busy.includes(loginProfile) ? 'Working…' : loginStatus === 'connected' ? 'Logged in' : loginStatus === 'disconnected' ? 'Log in' : 'Refresh login' }}</button>
+        <button :disabled="!loginProfile || busy.includes(loginProfile) || sessionReady" @click="act(loginProfile, loginStatus === 'disconnected' || loginStatus === 'connected' ? 'login' : 'refresh_login')">{{ busy.includes(loginProfile) ? 'Working…' : loginStatus === 'connected' ? (sessionReady ? 'Logged in' : 'Connect account') : loginStatus === 'disconnected' ? 'Log in' : 'Refresh login' }}</button>
         <p class="platform-status" role="status">{{ selectedProfile?.label || loginProfile }}: {{ loginStatus === 'connected' ? 'Connected' : loginStatus === 'expired' ? 'Session expired — refresh login' : loginStatus === 'expiry unknown' ? 'Logged in — token expiry unavailable; refresh to verify' : 'Not connected' }}<span v-if="selectedProfile?.login_expires_at"> · Expires {{ localTime(selectedProfile.login_expires_at) }}</span></p>
         <template v-if="selectedProfile?.accounts?.length">
           <label class="account-picker">Available trading accounts<select v-model="tradingAccount" aria-label="Available trading accounts" :disabled="busy.includes(loginProfile)">

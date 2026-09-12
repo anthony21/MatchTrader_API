@@ -29,7 +29,7 @@ def main():
     upstream = config.get('upstream', 'http://127.0.0.1')
     if forward and not upstream.startswith('https://'):
         parser.error('Forwarding requires an https upstream origin')
-    token = dotenv_values(args.env).get('MTR_BRIDGE_TOKEN') or ''
+    token = dotenv_values(args.env).get('AQF_BRIDGE_TOKEN') or ''
     if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
         parser.error('Configure the local receiver token')
     logs = Path(config.get('logDir', 'logs'))

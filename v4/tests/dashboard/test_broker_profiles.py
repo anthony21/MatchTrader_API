@@ -11,11 +11,11 @@ from matchtrader.models.order import Order
 
 def test_env_profiles_do_not_inherit_credentials_and_limit_five(tmp_path, monkeypatch):
     path = tmp_path / '.env'
-    path.write_text('MTR_PLATFORM_URL=https://one.example\nMTR_EMAIL=first\nMTR_ACCOUNT_ID=1\nGTR_PLATFORM_URL=https://two.example\nGTR_ACCOUNT_ID=1\nGTR_ENABLE_WRITES=true\n')
+    path.write_text('AQF_PLATFORM_URL=https://one.example\nAQF_EMAIL=first\nAQF_ACCOUNT_ID=1\nGTR_PLATFORM_URL=https://two.example\nGTR_ACCOUNT_ID=1\nGTR_ENABLE_WRITES=true\n')
     monkeypatch.setenv('GTR_PASSWORD', 'gtr-only')
     values = load_profiles(path)
     assert values['GTR'].email == ''
-    assert values['MTR'].password.get_secret_value() == ''
+    assert values['AQF'].password.get_secret_value() == ''
     assert values['GTR'].password.get_secret_value() == 'gtr-only'
     assert not values['GTR'].enable_writes
     with path.open('a') as f:
@@ -29,7 +29,7 @@ def test_env_profiles_do_not_inherit_credentials_and_limit_five(tmp_path, monkey
 
 def test_duplicate_profile_rejected(tmp_path):
     path = tmp_path / '.env'
-    path.write_text('MTR_PLATFORM_URL=https://one.example\nGTR_PLATFORM_URL=https://one.example\n')
+    path.write_text('AQF_PLATFORM_URL=https://one.example\nGTR_PLATFORM_URL=https://one.example\n')
     with pytest.raises(ValueError, match='Duplicate'):
         load_profiles(path)
 
@@ -71,15 +71,15 @@ def test_simultaneous_brokers_with_same_ids_remain_isolated(settings):
 
 def test_primary_reuses_existing_owner_and_blocks_account_mismatch(settings):
     primary = SimpleNamespace(lock=RLock(), selected='other', connection='connected', api=None)
-    profiles = BrokerProfiles({'MTR': settings}, primary)
+    profiles = BrokerProfiles({'AQF': settings}, primary)
     result = profiles.snapshot()['profiles'][0]
     assert result['connection'] == 'unavailable'
-    profiles.action('MTR', 'refresh')
+    profiles.action('AQF', 'refresh')
     assert 'balance' not in profiles.snapshot()['profiles'][0]
     with pytest.raises(ValueError):
         profiles.action('missing', 'connect')
     with pytest.raises(ValueError):
-        profiles.action('MTR', 'trade')
+        profiles.action('AQF', 'trade')
     profiles.close()
 
 
@@ -203,21 +203,21 @@ def test_platform_login_cache_expiry_refresh_and_isolation(settings):
 
 
 def test_primary_select_is_blocked_while_capture_runs(settings):
-    primary = SimpleNamespace(lifecycle=RLock(), lock=RLock(), running=True)
-    profiles = BrokerProfiles({'MTR': settings}, primary)
-    profiles.entries['MTR']['accounts'] = [{'id': 'new'}]
+    primary = SimpleNamespace(lifecycle=RLock(), lock=RLock(), running=True, selected=settings.account_id)
+    profiles = BrokerProfiles({'AQF': settings}, primary)
+    profiles.entries['AQF']['accounts'] = [{'id': 'new'}]
     with pytest.raises(ValueError, match='Stop capture'):
-        profiles.action('MTR', 'select', 'new')
-    assert profiles.entries['MTR']['settings'].account_id == settings.account_id
+        profiles.action('AQF', 'select', 'new')
+    assert profiles.entries['AQF']['settings'].account_id == settings.account_id
 
 
 def test_mixed_case_platform_labels_and_process_override(tmp_path, monkeypatch, settings):
     from matchtrader.dashboard.broker_profiles import load_profile_names
     path = tmp_path / '.env'
-    path.write_text('MTR_Platform_name=Aqua funded\nGTR_platform_name=Second broker\n')
+    path.write_text('AQF_Platform_name=Aqua funded\nGTR_platform_name=Second broker\n')
     monkeypatch.setenv('GTR_PLATFORM_NAME', 'Gooey Trade')
     names = load_profile_names(path)
-    assert names == {'MTR': 'Aqua funded', 'GTR': 'Gooey Trade'}
+    assert names == {'AQF': 'Aqua funded', 'GTR': 'Gooey Trade'}
     profiles = BrokerProfiles({'GTR': settings}, None, names=names)
     row = profiles.snapshot()['profiles'][0]
     assert row['label'] == 'Gooey Trade' and row['profile'] == 'GTR'
@@ -243,10 +243,10 @@ def test_primary_selection_clears_account_settings_and_never_retries_login(setti
         def open_positions(self): return []
     config = settings.model_copy(update={'system_uuid': 'original-system', 'ws_url': 'wss://original.example'})
     primary = DashboardController(config, tmp_path, api_factory=API)
-    profiles = BrokerProfiles({'MTR': config}, primary)
+    profiles = BrokerProfiles({'AQF': config}, primary)
     try:
-        profiles.entries['MTR']['accounts'] = [{'id': '456'}]
-        profiles.action('MTR', 'select', '456')
+        profiles.entries['AQF']['accounts'] = [{'id': '456'}]
+        profiles.action('AQF', 'select', '456')
         assert len(created) == 1
         assert created[0].settings.system_uuid == '' and created[0].settings.ws_url == ''
         assert primary.selected == '456' and not primary.native.armed

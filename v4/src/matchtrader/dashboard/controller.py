@@ -26,6 +26,7 @@ from ..core.errors import APIError
 from ..core.settings import Settings
 from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_controls import CopyControls, load_controls, save_controls
+from .broker_session import BrokerSession
 from .copy_settings import CopySettings, load_settings, save_settings
 from .p01_log import P01Log
 from .signal_copy import SignalCopy
@@ -45,6 +46,14 @@ AUTOMATIC_DISPATCH_DISABLED = (
 
 
 class DashboardController:
+    @property
+    def api(self):
+        return self.broker_session.api
+
+    @api.setter
+    def api(self, value):
+        self.broker_session.api = value
+
     def __init__(
         self,
         settings: Settings,
@@ -57,7 +66,9 @@ class DashboardController:
         csv_limit=1000,
         interactive_copying=False,
         p01_log_path=None,
+        broker_session=None,
     ):
+        self.broker_session = broker_session if broker_session is not None else BrokerSession()
         saved = load_settings(data_dir / "copy-settings.json")
         if saved and route is None:
             route, csv_limit = saved.route, saved.csv_limit
@@ -78,7 +89,6 @@ class DashboardController:
         self.capture_generation = 0
         self.capture_websocket = None
         self.source_signals = deque(maxlen=200)
-        self.api = None
         self.broker_profiles = None
         self.tradingbox_forwarder = None
         self.bridge = None
@@ -94,7 +104,7 @@ class DashboardController:
         # A cancel/closed signal unwinds against the capture ledger (the trades the owner sent)
         # regardless of that switch or the copy controls: see capture/unwind.py.
         self.signal_copy = SignalCopy(data_dir / 'relay', ledger=self.native_store)
-        self.p01_log = P01Log(p01_log_path or os.environ.get('MTR_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
+        self.p01_log = P01Log(p01_log_path or os.environ.get('AQF_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
         # Copy controls default to the safe state (paper, every source off) and are the only
         # gate on manual dispatch; PAMM publishing reads the forwarder lazily because the
         # launcher attaches it after construction.
@@ -139,12 +149,8 @@ class DashboardController:
 
     def connect(self, account_id, *, authentication=None):
         with self.lifecycle, self.lock:
-            if self.running:
-                raise ValueError("Stop capture before connecting")
             self._select(account_id)
-            if self.api:
-                self.api.close()
-            self.api = None
+            previous = self.api
             self.orders = []
             self.orders_at = None
             self.token_message = ""
@@ -156,7 +162,7 @@ class DashboardController:
             overrides = {"account_id": account_id}
             if account_id != self.settings.account_id:
                 overrides.update(system_uuid='', ws_url='', ws_headers_json='{}', ws_subprotocol='')
-            candidate = self.api_factory(self.settings.model_copy(update=overrides))
+            candidate = previous or self.api_factory(self.settings.model_copy(update=overrides))
             try:
                 auth = candidate.use_login(authentication) if authentication is not None else candidate.login()
                 found = auth.tradingAccounts or auth.accounts
@@ -176,8 +182,9 @@ class DashboardController:
                     else "Connected. Copying is disabled."
                 )
             except Exception as exc:
-                candidate.close()
-                self.connection = "error"
+                if previous is None:
+                    candidate.close()
+                self.connection = "connected" if previous is not None else "error"
                 if isinstance(exc, APIError) and exc.status_code == 403:
                     self.connection_message = (
                         "Aqua returned HTTP 403. The Python session could not authenticate."
@@ -317,7 +324,7 @@ class DashboardController:
                     raise ValueError("Broker writes are disabled for this dashboard session")
                 if not self._destination_verified():
                     raise ValueError("Connect the destination account before sending live")
-                api = self.api
+                api = self.broker_session.require(self.selected)
             return manual_send.send(self.native_store, controls, trade_id, volume, api, self.selected,
                                     route=self.native.route)
 

@@ -6,13 +6,34 @@ vi.mock('../api.js', () => ({ request: vi.fn() }))
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks() })
 
 // Profiles arrive as a pushed dashboard section; the component never fetches them.
+test('a discovered login can finish connecting and retains its balance after page remount', async () => {
+  const row = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'disconnected', accounts: [{ id: '123' }], revision: 1 }
+  const connected = { ...row, connection: 'connected', balance: { balance: '100', currency: 'USD' }, revision: 2 }
+  request.mockResolvedValue({ profiles: [connected] })
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [row] } } })
+  await flushPromises()
+  const button = w.find('.login-picker button')
+  expect(button.text()).toBe('Connect account')
+  expect(button.element.disabled).toBe(false)
+  await button.trigger('click'); await flushPromises()
+  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'login' })
+  expect(w.text()).toContain('100 USD')
+  w.unmount()
+  request.mockClear()
+  const remounted = mount(BrokerProfiles, { props: { pushed: { profiles: [connected] } } })
+  await flushPromises()
+  expect(remounted.text()).toContain('100 USD')
+  expect(request).not.toHaveBeenCalled()
+  remounted.unmount()
+})
+
 test('shows platform names only and changes login state with platform', async () => {
   const profiles = [
-    { profile: 'MTR', label: 'Aqua Funded', login_status: 'connected', accounts: [{ id: '1' }], revision: 0 },
+    { profile: 'AQF', label: 'Aqua Funded', login_status: 'connected', connection: 'connected', accounts: [{ id: '1' }], revision: 0 },
     { profile: 'GTR', label: 'Gooey Trade', login_status: 'expired', accounts: [], revision: 0 },
   ]
   request.mockResolvedValue({ profiles })
-  const w = mount(BrokerProfiles, { props: { pushed: { profiles, limit: 5, active_profile: 'MTR' } } }); await flushPromises()
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles, limit: 5, active_profile: 'AQF' } } }); await flushPromises()
   expect(request).not.toHaveBeenCalled()
   const picker = w.find('.login-picker')
   expect(picker.find('select').findAll('option').map(o => o.text())).toEqual(['Aqua Funded', 'Gooey Trade'])
@@ -27,7 +48,7 @@ test('shows platform names only and changes login state with platform', async ()
 })
 test('keeps same account IDs separated by broker profile and routes controls explicitly', async () => {
   const profiles = [
-    { profile: 'MTR', broker: 'https://one.example', account_id: '123', connection: 'disconnected', revision: 0 },
+    { profile: 'AQF', broker: 'https://one.example', account_id: '123', connection: 'disconnected', revision: 0 },
     { profile: 'GTR', broker: 'https://two.example', account_id: '123', connection: 'connected', revision: 0 },
   ]
   request.mockResolvedValue({ profiles })
@@ -43,7 +64,7 @@ test('keeps same account IDs separated by broker profile and routes controls exp
 
 test('profile login reveals only its returned accounts and selection sends both identities', async () => {
   const profiles = [
-    { profile: 'MTR', broker: 'https://one.example', accounts: [], revision: 0 },
+    { profile: 'AQF', broker: 'https://one.example', accounts: [], revision: 0 },
     { profile: 'GTR', broker: 'https://two.example', accounts: [], revision: 0 },
   ]
   request.mockImplementation(async (path, payload) => {
@@ -61,14 +82,14 @@ test('profile login reveals only its returned accounts and selection sends both 
   await picker.findAll('select')[1].setValue('222')
   await picker.findAll('button')[1].trigger('click'); await flushPromises()
   expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'GTR', action: 'select', account_id: '222' })
-  await picker.find('select').setValue('MTR')
+  await picker.find('select').setValue('AQF')
   expect(picker.findAll('select')).toHaveLength(1)
   expect(picker.text()).not.toContain('646133')
   w.unmount()
 })
 
 test('follows the pushed active profile and later pushes without fetching', async () => {
-  const first = { profiles: [{ profile: 'MTR', label: 'Aqua', revision: 0 }, { profile: 'GTR', label: 'Gooey', revision: 0 }], active_profile: 'GTR' }
+  const first = { profiles: [{ profile: 'AQF', label: 'Aqua', revision: 0 }, { profile: 'GTR', label: 'Gooey', revision: 0 }], active_profile: 'GTR' }
   const w = mount(BrokerProfiles, { props: { pushed: first } }); await flushPromises()
   expect(w.find('.login-picker select').element.value).toBe('GTR')
   await w.setProps({ pushed: { profiles: [{ profile: 'GTR', label: 'Gooey', balance: { balance: '10', equity: '10', currency: 'USD' }, revision: 1 }] } })
@@ -80,13 +101,13 @@ test('follows the pushed active profile and later pushes without fetching', asyn
 
 test('refreshes broker data only while a connected profile has something pending or open, then stops', async () => {
   vi.useFakeTimers()
-  const working = { profile: 'MTR', connection: 'connected', orders: [{ id: 'o1' }], positions: [], revision: 0 }
+  const working = { profile: 'AQF', connection: 'connected', orders: [{ id: 'o1' }], positions: [], revision: 0 }
   request.mockResolvedValue({ profiles: [{ ...working, orders: [] }] })
   const w = mount(BrokerProfiles, { props: { pushed: { profiles: [working] } } })
   await flushPromises()
   expect(request).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(5000)
-  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'MTR', action: 'refresh' })
+  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'refresh' })
   expect(request).toHaveBeenCalledTimes(1)
   // The broker reported nothing pending or open, so the timer does not re-arm.
   await vi.advanceTimersByTimeAsync(30000)

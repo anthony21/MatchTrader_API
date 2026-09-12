@@ -13,10 +13,10 @@ let child
 
 test.beforeAll(async () => {
   writeFileSync(ledger, 'utc,kind,label,symbol,side,entry,sl,tp\n')
-  writeFileSync(localEnv, `TB_FORWARD_API_KEY=test-tradingbox-native-key\nMTR_BRIDGE_TOKEN=stream-test-token-with-32-characters\nMTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test-account\nMTR_ACCOUNT_IDS=second-test-account\nMTR_R01_LEDGER=${ledger.replaceAll('\\', '/')}\n`)
+  writeFileSync(localEnv, `TB_FORWARD_API_KEY=test-tradingbox-native-key\nAQF_BRIDGE_TOKEN=stream-test-token-with-32-characters\nAQF_PLATFORM_URL=https://broker.example\nAQF_ACCOUNT_ID=test-account\nAQF_ACCOUNT_IDS=second-test-account\nAQF_R01_LEDGER=${ledger.replaceAll('\\', '/')}\n`)
   const python = process.env.E2E_PYTHON || (process.platform === 'win32'
     ? join(root, '.venv/Scripts/python.exe') : join(root, '.venv/bin/python'))
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MTR_') && !key.startsWith('TB_FORWARD_')))
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('AQF_') && !key.startsWith('TB_FORWARD_')))
   child = spawn(python, ['-m', 'matchtrader.dashboard.cli', '--port', '8766', '--ws-port', '0', '--env', localEnv,
     '--assets', join(root, 'frontend/dist'), '--data', join(directory, 'data')],
     { cwd: root, env: environment, windowsHide: true, stdio: 'pipe' })
@@ -33,7 +33,7 @@ test.afterAll(() => child?.kill())
 
 test('named login dropdown discovers accounts and selects an isolated session', async ({ page }) => {
   const profiles = [
-    { profile: 'MTR', label: 'Aqua login', broker: 'https://one.example', account_id: '111', connection: 'disconnected', accounts: [], revision: 0 },
+    { profile: 'AQF', label: 'Aqua login', broker: 'https://one.example', account_id: '111', connection: 'disconnected', accounts: [], revision: 0 },
     { profile: 'GTR', label: 'Second login', broker: 'https://two.example', account_id: '', connection: 'disconnected', accounts: [], revision: 0 },
   ]
   const calls = []
@@ -61,7 +61,7 @@ test('named login dropdown discovers accounts and selects an isolated session', 
   await page.getByRole('button', { name: 'Use selected account', exact: true }).click()
   await expect(page.getByRole('article', { name: 'GTR broker account' })).toContainText('Session: GTR / 333')
   expect(calls).toContainEqual({ profile: 'GTR', action: 'select', account_id: '333' })
-  await page.getByLabel('Platform', { exact: true }).selectOption('MTR')
+  await page.getByLabel('Platform', { exact: true }).selectOption('AQF')
   await expect(page.getByLabel('Available trading accounts')).toHaveCount(0)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
@@ -339,15 +339,15 @@ test('Event logging records unknown intent while capture is stopped', async ({ p
 })
 
 test('Broker profiles show identical account IDs in separate cards', async ({ page }) => {
-  const profiles = ['MTR', 'GTR'].map((profile, i) => ({ profile, account_id: '123', broker: `https://broker${i}.example`, connection: 'connected', revision: 1, balance: { balance: i ? '200' : '100', equity: i ? '201' : '101', currency: i ? 'EUR' : 'USD' }, orders: [], positions: [] }))
+  const profiles = ['AQF', 'GTR'].map((profile, i) => ({ profile, account_id: '123', broker: `https://broker${i}.example`, connection: 'connected', revision: 1, balance: { balance: i ? '200' : '100', equity: i ? '201' : '101', currency: i ? 'EUR' : 'USD' }, orders: [], positions: [] }))
   await page.route('**/api/broker-profiles', route => route.fulfill({ json: { profiles } }))
   await page.route('**/api/broker-profiles/action', route => route.fulfill({ json: { profiles } }))
   await page.goto(url)
   await page.getByRole('button', { name: 'Broker accounts', exact: true }).click()
-  await expect(page.getByRole('article', { name: 'MTR broker account' })).toContainText('100 USD')
+  await expect(page.getByRole('article', { name: 'AQF broker account' })).toContainText('100 USD')
   await page.getByLabel('Platform', { exact: true }).selectOption('GTR')
   await expect(page.getByRole('article', { name: 'GTR broker account' })).toContainText('200 EUR')
-  await expect(page.getByRole('article', { name: 'MTR broker account' })).toHaveCount(0)
+  await expect(page.getByRole('article', { name: 'AQF broker account' })).toHaveCount(0)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.screenshot({ path: 'test-results/broker-profiles-mobile.png', fullPage: true })

@@ -315,7 +315,7 @@ def test_discovery_when_broker_id_is_missing(api_factory, settings):
 
 def test_missing_credentials_do_not_connect(api_factory, settings):
     api, seen = api_factory(config=settings.model_copy(update={"email": ""}))
-    with pytest.raises(AuthenticationError, match="MTR_EMAIL"):
+    with pytest.raises(AuthenticationError, match="broker's EMAIL"):
         api.balance()
     assert not seen
 

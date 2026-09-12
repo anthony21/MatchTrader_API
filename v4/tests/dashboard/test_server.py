@@ -226,14 +226,14 @@ def test_logging_is_opaque_authenticated_and_never_routes(server, monkeypatch):
 
 def test_broker_profile_actions_require_session_and_known_profile(server):
     from matchtrader.dashboard.broker_profiles import BrokerProfiles
-    server.controller.broker_profiles = BrokerProfiles({'MTR': server.controller.settings}, server.controller)
+    server.controller.broker_profiles = BrokerProfiles({'AQF': server.controller.settings}, server.controller)
     assert call(server, '/api/broker-profiles')[0] == 401
-    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'MTR', 'action': 'connect'})[0] == 401
+    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'AQF', 'action': 'connect'})[0] == 401
     headers = {'X-Session-Token': 'test-session'}
     status, body = call(server, '/api/broker-profiles', headers=headers)
-    assert status == 200 and json.loads(body)['profiles'][0]['profile'] == 'MTR'
+    assert status == 200 and json.loads(body)['profiles'][0]['profile'] == 'AQF'
     assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'missing', 'action': 'refresh'}, headers)[0] == 400
-    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'MTR', 'action': 'trade'}, headers)[0] == 400
+    assert call(server, '/api/broker-profiles/action', 'POST', {'profile': 'AQF', 'action': 'trade'}, headers)[0] == 400
 
 
 def test_profile_login_and_selection_require_session_and_forward_account_id(server):

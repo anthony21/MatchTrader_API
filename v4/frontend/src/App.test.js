@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, expect, test, vi } from 'vitest'
 import App from './App.vue'
+import AccountControls from './components/AccountControls.vue'
 import { request } from './api.js'
 import { followDashboard } from './stream.js'
 
@@ -29,7 +30,7 @@ const full = {
   events: { account_id: '123', events: [] },
   capture_events: { events: [] },
   mappings: { account_id: '123', mappings: [] },
-  broker_profiles: { profiles: [{ profile: 'MTR', label: 'Aqua Funded', login_status: 'connected', accounts: [{ id: '123' }], revision: 0 }], limit: 5, active_profile: 'MTR' },
+  broker_profiles: { profiles: [{ profile: 'AQF', label: 'Aqua Funded', login_status: 'connected', connection: 'connected', accounts: [{ id: '123' }], revision: 0 }], limit: 5, active_profile: 'AQF' },
 }
 
 test('a freshly mounted shell issues no request at all while nothing is pending or open', async () => {
@@ -40,7 +41,7 @@ test('a freshly mounted shell issues no request at all while nothing is pending 
   await vi.advanceTimersByTimeAsync(30000)
   expect(request).not.toHaveBeenCalled()
   expect(followDashboard).toHaveBeenCalledOnce()
-  expect(wrapper.find('select').element.value).toBe('123')
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   wrapper.unmount()
 })
 
@@ -99,14 +100,29 @@ test('Orders keeps the v4 workspace and reads the broker once on opening while c
   wrapper.unmount()
 })
 
-test('Trading bridge keeps account controls, status grid and token panel, and start posts the selected account', async () => {
+test('the account/capture controls card only renders on the Trading bridge page', async () => {
+  push(full)
+  request.mockResolvedValue(idle)
+  const wrapper = mount(App)
+  await flushPromises()
+  expect(wrapper.findComponent(AccountControls).exists()).toBe(true)
+  await wrapper.findAll('button').find(b => b.text() === 'Orders').trigger('click')
+  await flushPromises()
+  expect(wrapper.findComponent(AccountControls).exists()).toBe(false)
+  wrapper.unmount()
+})
+
+test('Trading bridge hides login controls but keeps status grid, token panel, and start posts the selected account', async () => {
   const status = { accounts: [{ id: '123', verified: false }], account_id: '123', connection: 'disconnected',
     running: false, orders: [], orders_at: null, broker_orders_sent: 0, tradingbox_forwarding: { enabled: true, live: false } }
   push({ status, events: { account_id: '123', events: [] } })
   request.mockResolvedValue(status)
   const wrapper = mount(App)
   await flushPromises()
-  expect(wrapper.find('select').element.value).toBe('123')
+  expect(wrapper.find('#account').exists()).toBe(false)
+  expect(wrapper.findAll('button').some(b => b.text() === 'Choose broker login')).toBe(false)
+  expect(wrapper.findAll('button').some(b => b.text() === 'Log in')).toBe(false)
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   expect(wrapper.text()).toContain('Automatic dispatch off')
   expect(wrapper.text()).toContain('TradingBox preview')
   expect(wrapper.find('[aria-label="Service status"]').exists()).toBe(true)
@@ -128,7 +144,7 @@ test('refresh token button calls the login refresh route for the selected accoun
   await wrapper.findAll('button').find(button => button.text() === 'Refresh token').trigger('click')
   await flushPromises()
   expect(request).toHaveBeenCalledWith('token/refresh', { account_id: '123' })
-  expect(wrapper.find('select').element.value).toBe('123')
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   wrapper.unmount()
 })
 
@@ -152,17 +168,17 @@ test('a frame carrying one section leaves the others in place and unchanged sect
   const feed = push({ status, capture_events: { events: [{ id: 'one', symbol: 'FIRST', kind: 'POSITION' }] } })
   const wrapper = mount(App)
   await flushPromises()
-  await wrapper.find('select').setValue('456')
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   // Only capture_events changed; the merged snapshot still carries the same status object.
   feed.deliver({ capture_events: { events: [{ id: 'two', symbol: 'SECOND', kind: 'POSITION' }] } })
   await flushPromises()
   expect(wrapper.text()).toContain('SECOND')
   expect(wrapper.text()).toContain('Automatic dispatch off')
-  expect(wrapper.find('select').element.value).toBe('456')
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   // A new status object is applied and moves the selection with the account in view.
   feed.deliver({ status: { ...status, account_id: '789', accounts: [{ id: '123' }, { id: '456' }, { id: '789' }] } })
   await flushPromises()
-  expect(wrapper.find('select').element.value).toBe('789')
+  expect(wrapper.findComponent(AccountControls).props('selected')).toBe('789')
   expect(wrapper.text()).toContain('SECOND')
   wrapper.unmount()
 })

@@ -170,7 +170,7 @@ class RestConnection(BaseConnection):
         elif len(accounts) == 1:
             account = accounts[0]
         else:
-            raise AuthenticationError("Set MTR_ACCOUNT_ID: login did not return exactly one account")
+            raise AuthenticationError("Set the broker's ACCOUNT_ID: login did not return exactly one account")
         system = self.settings.system_uuid or account.get("offer", {}).get("system", {}).get("uuid", "")
         if not system or not all(c.isalnum() or c in "-_" for c in system):
             raise ProtocolError("Login returned an invalid system identifier")
@@ -202,7 +202,7 @@ class RestConnection(BaseConnection):
     def _login(self, body=None, one_time=False, discover_only=False):
         if body is None:
             if not self.settings.email or not self.settings.password.get_secret_value():
-                raise AuthenticationError("Set MTR_EMAIL and MTR_PASSWORD in your local .env")
+                raise AuthenticationError("Set the broker's EMAIL and PASSWORD in your local .env")
             broker = self.settings.broker_id
             if not broker:
                 platform = self._send("GET", "/manager/platform-details")
@@ -294,7 +294,7 @@ class RestConnection(BaseConnection):
         with self._lock:
             self.ensure_open()
             if write and not self.settings.enable_writes:
-                raise WritesDisabledError("Set MTR_ENABLE_WRITES=true to use mutation endpoints")
+                raise WritesDisabledError("Enable writes for this broker in your local .env to use mutation endpoints")
             if action == "login":
                 return self._login(body)
             if action == "one_time_login":

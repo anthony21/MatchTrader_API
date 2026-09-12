@@ -9,6 +9,10 @@ from urllib.parse import urlsplit
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+# The env prefix for the primary/default broker's Settings. Expected to disappear
+# once brokers become peers rather than one primary broker plus profiles.
+PRIMARY_PREFIX = "AQF"
+
 
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
@@ -66,11 +70,11 @@ class Settings(BaseModel):
         return value
 
     @classmethod
-    def from_env(cls, path: str | Path = ".env"):
+    def from_env(cls, path: str | Path = ".env", prefix: str = PRIMARY_PREFIX):
         values = {**dotenv_values(path), **os.environ}
         fields = {}
         for name in cls.model_fields:
-            value = values.get("MTR_" + name.upper())
+            value = values.get(prefix + "_" + name.upper())
             if value is not None and value != "":
                 fields[name] = value
         return cls(**fields)

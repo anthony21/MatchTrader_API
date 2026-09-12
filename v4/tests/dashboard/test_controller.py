@@ -367,6 +367,8 @@ def test_signal_arming_requires_connected_destination_and_stop_disarms(settings,
         with pytest.raises(ValueError):
             controller.set_signal_copying('yes')
         assert controller.set_signal_copying(True)['live'] is True
+        assert controller.status()['signal_copying'] is False  # the shared master is still Paper
+        controller.configure_copy_controls({'mode': 'live'})
         assert controller.status()['signal_copying'] is True
         # Native copying is refused for the rule itself, not merely because signal copying is on.
         with pytest.raises(ValueError, match='Automatic dispatch is disabled'):

@@ -10,13 +10,13 @@ from threading import RLock
 from dotenv import dotenv_values
 
 from ..api import MatchTraderAPI
-from ..core.settings import Settings
+from ..core.settings import PRIMARY_PREFIX, Settings
 
 
 def load_profiles(path):
     values = {**dotenv_values(path), **os.environ}
-    prefixes = ['MTR', *sorted({key[:-13] for key, value in values.items()
-                                if key.endswith('_PLATFORM_URL') and value and key != 'MTR_PLATFORM_URL'})]
+    prefixes = [PRIMARY_PREFIX, *sorted({key[:-13] for key, value in values.items()
+                                if key.endswith('_PLATFORM_URL') and value and key != PRIMARY_PREFIX + '_PLATFORM_URL'})]
     if len(prefixes) > 5:
         raise ValueError('Configure at most five broker profiles')
     result = {}
@@ -88,7 +88,7 @@ class BrokerProfiles:
                 expiry = login_expiry(entry['authentication']) if entry['authentication'] else None
                 state, error = entry['state'], entry['error']
                 api = entry['api']
-                if name == 'MTR':
+                if name == PRIMARY_PREFIX:
                     with self.primary.lock:
                         api = self.primary.api
                         state = self.primary.connection
@@ -98,6 +98,15 @@ class BrokerProfiles:
                             entry['data'] = {}
                 if not settings.account_id and not entry['accounts']:
                     state, error = 'configuration required', error or 'Log in above to discover available trading accounts'
+                # An active account session can outlive the discovery login token.
+                session_expiry = getattr(api.connection, 'session_expires_at', None) if api and state == 'connected' else None
+                if session_expiry:
+                    try:
+                        active_expiry = datetime.fromisoformat(session_expiry.replace('Z', '+00:00'))
+                        if active_expiry > datetime.now(UTC):
+                            login_status, expiry = 'connected', active_expiry
+                    except (TypeError, ValueError):
+                        pass
                 result.append({'profile': name, 'label': self.names.get(name) or name,
                                'broker': settings.platform_url, 'account_id': settings.account_id,
                                'accounts': list(entry['accounts']) if login_status != 'expired' else [],
@@ -111,6 +120,8 @@ class BrokerProfiles:
         entry = self._entry(name)
         with entry['lock']:
             if not force and login_state(entry) == 'connected':
+                if entry['settings'].account_id in {a['id'] for a in entry['accounts']}:
+                    return self.select(name, entry['settings'].account_id)
                 return {'profile': name, 'completed': True}
             candidate = None
             entry['accounts'] = []
@@ -142,6 +153,9 @@ class BrokerProfiles:
                 if candidate:
                     candidate.close()
                 entry['revision'] += 1
+            configured = entry['settings'].account_id
+            if configured and configured in {a['id'] for a in entry['accounts']}:
+                return self.select(name, configured)
         return {'profile': name, 'completed': bool(entry['accounts'])}
 
     def select(self, name, account_id):
@@ -151,23 +165,25 @@ class BrokerProfiles:
                 self.discover(name, force=True)
             if account_id not in {a['id'] for a in entry['accounts']}:
                 raise ValueError('Log in and select an account returned by this broker')
-            if name == 'MTR':
+            if name == PRIMARY_PREFIX:
                 with self.primary.lifecycle, self.primary.lock:
-                    if self.primary.running:
+                    if self.primary.running and account_id != self.primary.selected:
                         raise ValueError('Stop capture before switching the primary account')
                     self.primary.accounts = [{'id': a['id'], 'verified': True} for a in entry['accounts']]
                     if login_state(entry) == 'connected':
                         self.primary.connect(account_id, authentication=entry['authentication'])
                     else:
                         self.primary.connect(account_id)
-            elif entry['api']:
+            elif entry['api'] and account_id != entry['settings'].account_id:
                 entry['api'].close()
                 entry['api'] = None
+            elif entry['api'] and entry['authentication'] is not None:
+                entry['api'].use_login(entry['authentication'])
             if account_id != entry['settings'].account_id:
                 entry['settings'] = entry['settings'].model_copy(update={'account_id': account_id,
                     'system_uuid': '', 'ws_url': '', 'ws_headers_json': '{}', 'ws_subprotocol': ''})
             entry.update(data={}, error='', state='disconnected')
-            return self.action(name, 'refresh' if name == 'MTR' else 'connect')
+            return self.action(name, 'refresh' if name == PRIMARY_PREFIX else 'connect')
 
     def action(self, name, action, account_id=None):
         if action == 'login':
@@ -185,13 +201,13 @@ class BrokerProfiles:
                 raise ValueError(f'Set {name}_ACCOUNT_ID in .env')
             try:
                 if action == 'disconnect':
-                    if name == 'MTR':
+                    if name == PRIMARY_PREFIX:
                         self.primary.stop()
                     elif entry['api']:
                         entry['api'].close()
                     entry.update(api=None, state='disconnected', data={}, error='', accounts=[], authentication=None)
                 else:
-                    if name == 'MTR':
+                    if name == PRIMARY_PREFIX:
                         if self.primary.selected != settings.account_id:
                             raise ValueError('Primary account changed')
                         if action == 'connect' and self.primary.api is None:
@@ -216,11 +232,9 @@ class BrokerProfiles:
                     entry.update(state='connected', error='')
             except Exception:
                 # Never retain a successful-looking snapshot after a failed refresh.
-                entry.update(data={}, state='error', accounts=[], authentication=None,
-                             error='Account operation failed; verify this profile configuration and connection')
-                if name != 'MTR' and entry['api']:
-                    entry['api'].close()
-                    entry['api'] = None
+                connected = self.primary.api is not None if name == PRIMARY_PREFIX else entry['api'] is not None
+                entry.update(data={}, state='connected' if connected else 'error',
+                             error='Account read failed; the broker session is retained. Try Refresh.')
             entry['revision'] += 1
         return {'profile': name, 'completed': True}
 
@@ -244,7 +258,7 @@ class BrokerProfiles:
             account_id = entry['settings'].account_id
             if payload.get('account_id') != account_id:
                 raise ValueError('Selected account changed; reload closed trades')
-            if name == 'MTR':
+            if name == PRIMARY_PREFIX:
                 with self.primary.lock:
                     if self.primary.selected != account_id:
                         raise ValueError('Primary account changed')
@@ -254,6 +268,6 @@ class BrokerProfiles:
     def close(self):
         for name, entry in self.entries.items():
             with entry['lock']:
-                if name != 'MTR' and entry['api']:
+                if name != PRIMARY_PREFIX and entry['api']:
                     entry['api'].close()
                 entry.update(api=None, data={}, state='disconnected', accounts=[], authentication=None)

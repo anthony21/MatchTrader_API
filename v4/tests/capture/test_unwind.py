@@ -373,18 +373,18 @@ def test_disconnected_or_write_disabled_sessions_hold_with_an_investigable_reaso
     assert outcome["decision"] == "held" and "not connected" in outcome["reason"]
     broker.settings = SimpleNamespace(enable_writes=False)
     outcome = unwind.apply(store, signal(event_id="c3"), broker, "demo", True)
-    assert outcome["decision"] == "held" and "MTR_ENABLE_WRITES" in outcome["reason"]
+    assert outcome["decision"] == "held" and "enable writes for this broker" in outcome["reason"]
     assert store.trade(trade_id)["state"] == "pending" and broker.writes() == []
     assert [a["action_key"] for a in rows(store, "attempts", trade_id)] == ["CREATE"]
     # The client refusing after the claim is still a known non-send: the trade is released.
     del broker.settings
 
     def disabled(**kwargs):
-        raise WritesDisabledError("Set MTR_ENABLE_WRITES=true to use mutation endpoints")
+        raise WritesDisabledError("Enable writes for this broker in your local .env to use mutation endpoints")
 
     broker.cancel_pending_order = disabled
     outcome = unwind.apply(store, signal(event_id="c4"), broker, "demo", True)
-    assert outcome["decision"] == "held" and "MTR_ENABLE_WRITES" in outcome["reason"]
+    assert outcome["decision"] == "held" and "enable writes for this broker" in outcome["reason"]
     trade = store.trade(trade_id)
     assert trade["state"] == "pending"
     (attempt,) = [a for a in rows(store, "attempts", trade_id) if a["action_key"] == "CANCEL:signal:c4"]

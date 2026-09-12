@@ -18,7 +18,10 @@ test('application entry mounts the functional account controls', async () => {
   await import('./main.js')
   await flushPromises()
   const root = document.querySelector('#app')
-  expect(root.querySelector('#account').value).toBe('test')
+  // Trading bridge is the default page and hides the login/account picker.
+  expect(root.querySelector('#account')).toBeNull()
+  const accountMetric = Array.from(root.querySelectorAll('.metric')).find(el => el.textContent.includes('ACCOUNT IN VIEW'))
+  expect(accountMetric.querySelector('strong').textContent).toBe('test')
   expect(root.textContent).toContain('Start capture')
   root.__vue_app__.unmount()
 })

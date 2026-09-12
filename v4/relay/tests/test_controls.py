@@ -43,7 +43,7 @@ def listening(port):
 def test_user_controls_all_services_and_closing_launcher_leaves_no_listeners(tmp_path, stop_mode):
     dashboard_port, relay_port = available_port(), available_port()
     environment = tmp_path / 'test.env'
-    environment.write_text('MTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test\nMTR_BRIDGE_TOKEN=local-test-token-with-at-least-32-characters\n')
+    environment.write_text('AQF_PLATFORM_URL=https://broker.example\nAQF_ACCOUNT_ID=test\nAQF_BRIDGE_TOKEN=local-test-token-with-at-least-32-characters\n')
     logs = tmp_path / 'logs'
     logs.mkdir()
     relay = tmp_path / 'relay.json'

@@ -18,7 +18,7 @@ from .dispatch_metrics import DispatchMetrics
 class CaptureWebSocketServer:
     def __init__(self, controller, token, port=8767, *, queue_limit=256, max_inflight=32):
         if not token or len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
-            raise ValueError('Configure MTR_BRIDGE_TOKEN before enabling WebSocket capture')
+            raise ValueError('Configure AQF_BRIDGE_TOKEN before enabling WebSocket capture')
         if not 0 <= port <= 65535 or queue_limit < 1 or max_inflight < 1:
             raise ValueError('Invalid WebSocket receiver limits')
         self.controller, self.token, self.port = controller, token, port

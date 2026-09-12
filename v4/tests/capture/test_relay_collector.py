@@ -81,7 +81,7 @@ def test_stop_file_ends_the_collector_loop_before_any_delivery(tmp_path, monkeyp
     logs.mkdir()
     (logs / 'raw-request-20260911.jsonl').write_text('{"never":"delivered"}\n')
     environment = tmp_path / '.env'
-    environment.write_text('MTR_BRIDGE_TOKEN=' + 'x' * 40 + '\n')
+    environment.write_text('AQF_BRIDGE_TOKEN=' + 'x' * 40 + '\n')
     stop = tmp_path / 'collector.stop'
     stop.touch()
     relay_collector.main(['--logs', str(logs), '--state', str(tmp_path / 'state.sqlite3'),

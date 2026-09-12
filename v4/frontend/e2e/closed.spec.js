@@ -8,7 +8,7 @@ const url = 'http://127.0.0.1:8768'
 let child
 test.beforeAll(async () => {
   const env = join(dir, '.env')
-  writeFileSync(env, 'MTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test-account\nMTR_BRIDGE_TOKEN=history-test-token-with-32-characters\n')
+  writeFileSync(env, 'AQF_PLATFORM_URL=https://broker.example\nAQF_ACCOUNT_ID=test-account\nAQF_BRIDGE_TOKEN=history-test-token-with-32-characters\n')
   child = spawn(process.env.E2E_PYTHON, ['-m', 'matchtrader.dashboard.cli', '--port', '8768', '--ws-port', '0', '--env', env, '--assets', join(root, 'frontend/dist'), '--data', join(dir, 'data')], { cwd: root, env: process.env, windowsHide: true, stdio: 'pipe' })
   await new Promise((done, fail) => {
     const timeout = setTimeout(() => fail(Error('Dashboard did not start')), 15000)

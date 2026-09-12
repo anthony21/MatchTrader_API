@@ -16,8 +16,8 @@ def test_websocket_lifecycle_is_owned_by_dashboard(tmp_path, monkeypatch, ws_por
 
     (tmp_path / 'index.html').write_text('<html></html>')
     environment = tmp_path / '.env'
-    environment.write_text('MTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test\n')
-    monkeypatch.setenv('MTR_BRIDGE_TOKEN', 'test-token-at-least-32-characters-long')
+    environment.write_text('AQF_PLATFORM_URL=https://broker.example\nAQF_ACCOUNT_ID=test\n')
+    monkeypatch.setenv('AQF_BRIDGE_TOKEN', 'test-token-at-least-32-characters-long')
     calls = []
     class Controller:
         def __init__(self, *args, **kwargs):
@@ -55,11 +55,11 @@ def test_stop_file_shuts_the_dashboard_down_and_p01_path_comes_from_env(tmp_path
 
     (tmp_path / 'index.html').write_text('<html></html>')
     environment = tmp_path / '.env'
-    environment.write_text('MTR_PLATFORM_URL=https://broker.example\nMTR_ACCOUNT_ID=test\n'
-                           'MTR_P01_LOG_PATH=C:/logs/P01_RR.log\n')
+    environment.write_text('AQF_PLATFORM_URL=https://broker.example\nAQF_ACCOUNT_ID=test\n'
+                           'AQF_P01_LOG_PATH=C:/logs/P01_RR.log\n')
     monkeypatch.delenv('HCAMM_CONTROL_LOCK', raising=False)
-    monkeypatch.delenv('MTR_BRIDGE_TOKEN', raising=False)
-    monkeypatch.delenv('MTR_P01_LOG_PATH', raising=False)
+    monkeypatch.delenv('AQF_BRIDGE_TOKEN', raising=False)
+    monkeypatch.delenv('AQF_P01_LOG_PATH', raising=False)
     stop = tmp_path / 'dashboard.stop'
     stop.touch()
     seen = {}

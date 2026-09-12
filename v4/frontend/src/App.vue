@@ -158,8 +158,8 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
-      <AccountControls v-if="page !== 'brokers'" :state="state" v-model:selected="selected" :busy="busy"
-        @connect="action('connect')" @start="action('start')" @stop="action('stop')" @choose-login="openPage('brokers')" />
+      <AccountControls v-if="page === 'bridge'" :state="state" :selected="selected" :busy="busy"
+        @start="action('start')" @stop="action('stop')" />
       <section v-if="OVERVIEW_PAGES.includes(page)" class="status-grid" aria-label="Service status">
         <article class="card metric"><span class="metric-label">BRIDGE</span>
           <strong><span class="status-dot" :class="{ on: state.running }"></span>{{ state.running ? 'Observing' : 'Stopped' }}</strong>

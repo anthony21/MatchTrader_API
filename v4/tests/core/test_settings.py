@@ -6,8 +6,8 @@ from matchtrader.core.settings import Settings
 
 def test_env_precedence_and_hidden_secrets(tmp_path, monkeypatch):
     env = tmp_path / ".env"
-    env.write_text("MTR_PLATFORM_URL=https://broker.example\nMTR_PASSWORD=do-not-print\nMTR_ACCOUNT_ID=1")
-    monkeypatch.setenv("MTR_ACCOUNT_ID", "2")
+    env.write_text("AQF_PLATFORM_URL=https://broker.example\nAQF_PASSWORD=do-not-print\nAQF_ACCOUNT_ID=1")
+    monkeypatch.setenv("AQF_ACCOUNT_ID", "2")
     s = Settings.from_env(env)
     assert s.account_id == "2"
     assert s.password.get_secret_value() == "do-not-print"
@@ -39,7 +39,7 @@ def test_bad_ws_headers_and_limits():
 
 def test_tls_minimum_from_env_and_invalid_versions(tmp_path):
     env = tmp_path / ".env"
-    env.write_text("MTR_PLATFORM_URL=https://broker.example\nMTR_TLS_MINIMUM_VERSION=TLSv1.3\n")
+    env.write_text("AQF_PLATFORM_URL=https://broker.example\nAQF_TLS_MINIMUM_VERSION=TLSv1.3\n")
     assert Settings.from_env(env).tls_minimum_version == "TLSv1.3"
     assert Settings(platform_url="https://broker.example").tls_minimum_version == "TLSv1.3"
     for value in ("TLSv1.1", "false", "auto"):

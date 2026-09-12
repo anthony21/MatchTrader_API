@@ -120,7 +120,7 @@ def test_relay_cli_refuses_forwarding_to_a_non_https_origin(tmp_path):
     config = tmp_path / 'relay.json'
     config.write_text('{"forward":true}')
     env = tmp_path / 'test.env'
-    env.write_text('MTR_BRIDGE_TOKEN=local-test-key-with-32-characters-long')
+    env.write_text('AQF_BRIDGE_TOKEN=local-test-key-with-32-characters-long')
     result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'tb-relay.py'), '--config', str(config), '--env', str(env)], capture_output=True, text=True)
     assert result.returncode != 0
     assert 'Forwarding requires an https upstream origin' in result.stderr

@@ -13,7 +13,7 @@ class WebSocketConnection(BaseConnection):
     def __init__(self, settings, *, _key=None, connector=connect):
         super().__init__(settings, _key=_key)
         if not settings.ws_url:
-            raise ConfigurationError("Set broker-confirmed MTR_WS_URL and protocol settings first")
+            raise ConfigurationError("Set the broker-confirmed WS_URL and protocol settings first")
         self._socket = connector(
             settings.ws_url,
             additional_headers=json.loads(settings.ws_headers_json.get_secret_value()),

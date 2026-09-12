@@ -24,14 +24,14 @@ def main(argv=None):
     observer.add_argument("--seconds", type=float, default=30)
     args = parser.parse_args(argv)
     env = {**dotenv_values(args.env), **os.environ}
-    account = env.get("MTR_ACCOUNT_ID", "")
+    account = env.get("AQF_ACCOUNT_ID", "")
     if not account:
-        parser.error("Set MTR_ACCOUNT_ID in .env")
+        parser.error("Set AQF_ACCOUNT_ID in .env")
     with ShadowBridge(account, args.journal) as bridge:
         if args.command == "serve":
-            token = env.get("MTR_BRIDGE_TOKEN", "") or ""
+            token = env.get("AQF_BRIDGE_TOKEN", "") or ""
             if len(token) < 32:
-                parser.error("Set MTR_BRIDGE_TOKEN to a random secret of at least 32 characters")
+                parser.error("Set AQF_BRIDGE_TOKEN to a random secret of at least 32 characters")
             print(f"Shadow receiver: http://127.0.0.1:{args.port}/events (no broker orders)", flush=True)
             serve(bridge, token, port=args.port)
         else:

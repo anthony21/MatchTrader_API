@@ -136,8 +136,8 @@ def apply(store, signal, api, destination, verified, *, trade_id=None):
             # uncertain. Release the trade and close the attempt as held.
             store.update(trade_id, state=trade["state"])
             store.finish(trade_id, action_key, "held")
-            message = (f"Broker writes are disabled for this dashboard process (MTR_ENABLE_WRITES); the "
-                       f"{action.lower()} for trade {trade_id} was not sent")
+            message = (f"Broker writes are disabled for this dashboard process (enable writes for this "
+                       f"broker in your local .env); the {action.lower()} for trade {trade_id} was not sent")
             store.record_reason(trade_id, action_key, 1, "held", {
                 "origin": "local", "code": type(exc).__name__, "summary": message,
                 "evidence": f"client refused the write before any network activity; {correlation}",
@@ -218,8 +218,8 @@ def _prepare(store, trade, signal, api, destination, verified, action):
     settings = getattr(api, "settings", None)
     if not getattr(settings, "enable_writes", True):
         raise Refusal("WritesDisabled",
-                      f"Broker writes are disabled for this dashboard process (MTR_ENABLE_WRITES); the {verb} for "
-                      f"trade {trade_id} was not sent")
+                      f"Broker writes are disabled for this dashboard process (enable writes for this broker "
+                      f"in your local .env); the {verb} for trade {trade_id} was not sent")
     if action == "CANCEL":
         if not trade["broker_order_id"]:
             raise Refusal("NoBrokerOrderId",
