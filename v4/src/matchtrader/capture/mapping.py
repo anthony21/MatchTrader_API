@@ -286,6 +286,8 @@ class MappingLedger:
         return {'schema_version': MAPPING_SCHEMA_VERSION, 'trade_id': identity, 'broker': self.broker,
                 'source_scope': json.loads(trade['scope']),
                 'symbol': trade.get('symbol', ''), 'side': trade.get('side', ''), 'source': trade.get('source', 'UNKNOWN'),
+                'lots': trade.get('lots', ''), 'source_quantity': trade.get('source_quantity', ''),
+                'source_state': trade.get('source_state', ''),
                 'account_id': trade['destination'], 'state': trade['state'], 'mapping_status': status,
                 'reasons': reasons, 'links': links, 'fills': fills, 'quantities': quantities,
                 'actions': actions, 'destination_observations': destination_observations,

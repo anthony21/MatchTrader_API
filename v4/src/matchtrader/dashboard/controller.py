@@ -14,8 +14,10 @@ from time import monotonic
 from ..api import MatchTraderAPI
 from ..bridge.api import ShadowBridge
 from ..bridge.ledger import LedgerTail
+from ..capture import manual_send
 from ..capture.logging_store import LoggingStore
 from ..capture.meaning import meaning
+from ..capture.pamm_publisher import PammPublisher
 from ..capture.reconcile import reconcile
 from ..capture.relay_store import RelayLogStore
 from ..capture.router import CaptureRouter
@@ -23,6 +25,7 @@ from ..capture.store import CaptureStore
 from ..core.errors import APIError
 from ..core.settings import Settings
 from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
+from .copy_controls import CopyControls, load_controls, save_controls
 from .copy_settings import CopySettings, load_settings, save_settings
 from .p01_log import P01Log
 from .signal_copy import SignalCopy
@@ -79,6 +82,12 @@ class DashboardController:
         # Signal copying starts disarmed on every process start; only an explicit action arms it.
         self.signal_copy = SignalCopy(data_dir / 'relay')
         self.p01_log = P01Log(p01_log_path or os.environ.get('MTR_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
+        # Copy controls default to the safe state (paper, every source off) and are the only
+        # gate on manual dispatch; PAMM publishing reads the forwarder lazily because the
+        # launcher attaches it after construction.
+        self.copy_controls_path = data_dir / "copy-controls.json"
+        self.copy_controls = load_controls(self.copy_controls_path)
+        self.pamm = PammPublisher(self.native_store, lambda: self.tradingbox_forwarder)
         self.token_message = ""
         self.reconciliation_message = ""
         self.lock = RLock()
@@ -188,6 +197,7 @@ class DashboardController:
                 self.positions_at = datetime.now(UTC).isoformat()
                 with self.native.lock:
                     reconcile(self.native_store, self.api, self.selected, positions)
+                self._publish_verified()
             except Exception:
                 self.positions = []
                 self.positions_at = None
@@ -273,6 +283,47 @@ class DashboardController:
                 self.native.armed = False
             self.signal_copy.arm(enabled)
             return self.signal_copy.settings()
+
+    def copy_controls_view(self):
+        with self.lock:
+            return self.copy_controls.model_dump(mode="json")
+
+    def configure_copy_controls(self, payload):
+        """Full replacement of the copy controls; validated, then persisted atomically."""
+        value = CopyControls.model_validate(payload)
+        with self.lock:
+            save_controls(self.copy_controls_path, value)
+            self.copy_controls = value
+            return self.copy_controls_view()
+
+    def send_trade(self, payload):
+        """The only path by which a candidate reaches the broker, and only in live mode."""
+        if not isinstance(payload, dict):
+            raise ValueError("Expected a trade id and volume")
+        trade_id, volume = payload.get("trade_id"), payload.get("volume")
+        if not isinstance(trade_id, str) or not trade_id:
+            raise ValueError("A trade id is required")
+        with self.lifecycle, self.lock:
+            controls = self.copy_controls
+            api = None
+            if controls.mode == "live":
+                if not self.settings.enable_writes:
+                    raise ValueError("Broker writes are disabled for this dashboard session")
+                if not self._destination_verified():
+                    raise ValueError("Connect the destination account before sending live")
+                api = self.api
+            return manual_send.send(self.native_store, controls, trade_id, volume, api, self.selected,
+                                    route=self.native.route)
+
+    def _publish_verified(self):
+        """After a read-back pass: tell TradingBox about newly verified trades, never more.
+        A failure here is recorded by the publisher and must not disturb reconciliation."""
+        if not self.pamm.enabled():
+            return
+        try:
+            self.pamm.sweep(self.native_store.mapping_view(self.selected))
+        except Exception:
+            self.reconciliation_message = "PAMM publication failed; verified records are unchanged."
 
     def source_signal_feed(self):
         with self.lock:
@@ -438,6 +489,7 @@ class DashboardController:
                                     self.native_store, self.api, self.selected, self.api.open_positions()
                                 )
                             self.reconciliation_message = ""
+                            self._publish_verified()
                         except Exception:
                             self.reconciliation_message = (
                                 "Broker reconciliation unavailable; unresolved IDs retained."

@@ -226,6 +226,56 @@ test('Raw events mounts recent signal activity only when its own section is expa
   wrapper.unmount()
 })
 
+const ledgerRow = { trade_id: 'v1', state: 'verified_open', verified: true, symbol: 'VERIFIEDSYM', side: 'BUY', lots: '0.10', source_enabled: true,
+  source: { code: 'X17', scope: ['m', 'c', 's'], order_ids: ['qt-1'], position_ids: [] },
+  destination: { broker: 'AquaFunded', account_id: '123', order_ids: ['aq-1'], position_ids: ['aq-p1'] },
+  timestamps: { sent_at: '2026-09-11T10:00:00Z', confirmed_at: '2026-09-11T10:00:01Z', broker_open: '2026-09-11T10:00:02Z', broker_open_millis: null },
+  read_back: { reader: 'positions', volume: '0.10', open_price: '1.1' }, pamm: null, cancellation: null, mapping_status: 'mapped', reasons: [] }
+const paperRow = { trade_id: 'p1', source: 'P01', symbol: 'PAPERSYM', side: 'SELL', lots: '0.20', request: { symbol: 'PAPERSYM' },
+  verdict: 'would_send', reason: 'Mapping resolved', decided_at: '2026-09-11T10:00:00Z' }
+
+test('Verified trades and Paper trades render from pushed sections, stay separate, and open without any request', async () => {
+  vi.useFakeTimers()
+  push({ ...full, copy_controls: { mode: 'live', sources: { P01: true, X17: true, MANUAL: false } },
+    verified_trades: { account_id: '123', rows: [ledgerRow] }, paper_sends: { account_id: '123', rows: [paperRow] } })
+  const wrapper = mount(App)
+  await flushPromises()
+  expect(wrapper.find('.mode-pill').text()).toContain('Copy LIVE')
+  const open = async label => { await wrapper.findAll('button').find(b => b.text() === label).trigger('click'); await flushPromises() }
+  await open('Verified trades')
+  expect(wrapper.find('h1').text()).toBe('Verified trades')
+  expect(wrapper.find('[aria-label="Copy controls"]').classes()).toContain('live')
+  expect(wrapper.find('[aria-label="Verified trades"]').exists()).toBe(true)
+  expect(wrapper.text()).toContain('VERIFIEDSYM')
+  expect(wrapper.text()).not.toContain('PAPERSYM')
+  expect(wrapper.find('[aria-label="Service status"]').exists()).toBe(false)
+  await open('Paper trades')
+  expect(wrapper.find('h1').text()).toBe('Paper trades')
+  expect(wrapper.find('[aria-label="Paper trades"]').exists()).toBe(true)
+  expect(wrapper.text()).toContain('PAPERSYM')
+  expect(wrapper.text()).not.toContain('VERIFIEDSYM')
+  await vi.advanceTimersByTimeAsync(30000)
+  expect(request).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+test('without the ledger sections the new pages render the safe, honest empty states', async () => {
+  push(full)
+  const wrapper = mount(App)
+  await flushPromises()
+  expect(wrapper.find('.mode-pill').text()).toContain('Copy paper')
+  await wrapper.findAll('button').find(b => b.text() === 'Verified trades').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('has not reported copy controls yet')
+  expect(wrapper.find('[aria-label="Copy controls"] [role=status]').text()).toBe('PAPER · nothing is sent to a broker')
+  expect(wrapper.text()).toContain('No verified trade records for this account yet')
+  await wrapper.findAll('button').find(b => b.text() === 'Paper trades').trigger('click')
+  await flushPromises()
+  expect(wrapper.text()).toContain('No paper sends recorded for this account.')
+  expect(request).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
 test('a page query opens that page directly', async () => {
   window.history.replaceState({}, '', '/?page=logging')
   push(full)

@@ -22,6 +22,41 @@ def _unverified(message):
     return error
 
 
+def record_failure(store, identity, action_key, exc):
+    """Land a failed or unconfirmed write attempt: persist an investigable reason, mark the
+    trade uncertain and close the attempt so it is never retried. Shared by the armed router
+    and the explicit manual send so both paths keep exactly the same discipline."""
+    # Reason construction AND the insert both live inside this one protective region:
+    # an exception whose own __str__ raises (built while forming the reason) must not
+    # escape and skip the state transitions below - it must instead fall through to
+    # the log statement, and the transitions must still run unconditionally.
+    reason = None
+    try:
+        candidate = getattr(exc, "reason", None)
+        if isinstance(candidate, dict) and all(
+            candidate.get(k) for k in ("origin", "code", "evidence")
+        ):
+            reason = candidate
+        else:
+            # No structured evidence of where this failed (wire, broker or local):
+            # asserting origin='transport' here would claim a cause never established.
+            reason = unconfirmed_reason(exc, correlation=f"trade {identity} action {action_key}")
+        store.record_reason(identity, action_key, 1, "uncertain", reason)
+    except Exception as log_exc:
+        # The row may be lost, but the explanation must survive somewhere: log it,
+        # sanitized, correlated to the trade/action, rather than a silent pass.
+        logger.error(
+            "Outcome reason not recorded for trade_id=%s action_key=%s origin=%s code=%s: %s",
+            identity, action_key,
+            reason.get("origin") if isinstance(reason, dict) else "unavailable",
+            reason.get("code") if isinstance(reason, dict) else "unavailable",
+            type(log_exc).__name__,
+        )
+    store.update(identity, state="uncertain")
+    store.finish(identity, action_key, "uncertain")
+    return "uncertain", "Write outcome requires broker reconciliation; not retried"
+
+
 class CaptureRouter:
     def __init__(self, store, route=None):
         self.store = store
@@ -242,35 +277,7 @@ class CaptureRouter:
                 raise
             return "accepted", "Broker accepted the mapped action"
         except Exception as exc:
-            # Reason construction AND the insert both live inside this one protective region:
-            # an exception whose own __str__ raises (built while forming the reason) must not
-            # escape and skip the state transitions below - it must instead fall through to
-            # the log statement, and the transitions must still run unconditionally.
-            reason = None
-            try:
-                candidate = getattr(exc, "reason", None)
-                if isinstance(candidate, dict) and all(
-                    candidate.get(k) for k in ("origin", "code", "evidence")
-                ):
-                    reason = candidate
-                else:
-                    # No structured evidence of where this failed (wire, broker or local):
-                    # asserting origin='transport' here would claim a cause never established.
-                    reason = unconfirmed_reason(exc, correlation=f"trade {identity} action {action_key}")
-                self.store.record_reason(identity, action_key, 1, "uncertain", reason)
-            except Exception as log_exc:
-                # The row may be lost, but the explanation must survive somewhere: log it,
-                # sanitized, correlated to the trade/action, rather than a silent pass.
-                logger.error(
-                    "Outcome reason not recorded for trade_id=%s action_key=%s origin=%s code=%s: %s",
-                    identity, action_key,
-                    reason.get("origin") if isinstance(reason, dict) else "unavailable",
-                    reason.get("code") if isinstance(reason, dict) else "unavailable",
-                    type(log_exc).__name__,
-                )
-            self.store.update(identity, state="uncertain")
-            self.store.finish(identity, action_key, "uncertain")
-            return "uncertain", "Write outcome requires broker reconciliation; not retried"
+            return record_failure(self.store, identity, action_key, exc)
 
     @staticmethod
     def _positions(groups):

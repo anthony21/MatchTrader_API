@@ -469,10 +469,15 @@ def test_dashboard_stream_needs_a_session_before_it_streams(server):
 
 def test_dashboard_sections_cover_every_panel_the_shell_used_to_poll(server):
     sections = Handler.dashboard_sections(server.controller, [])
-    assert set(sections) == {"status", "events", "capture_events", "mappings", "broker_profiles"}
+    assert set(sections) == {"status", "events", "capture_events", "mappings", "broker_profiles",
+                             "copy_controls", "paper_sends", "verified_trades"}
     assert sections["status"]["version"] and "account_id" in sections["mappings"]
     assert isinstance(sections["capture_events"]["events"], list)
     assert sections["broker_profiles"] == {"profiles": [], "limit": 5}
+    # The ledger panels start from the safe state: paper, every source off, nothing sent.
+    assert sections["copy_controls"] == {"mode": "paper", "sources": {"P01": False, "X17": False, "MANUAL": False}}
+    assert sections["paper_sends"] == {"account_id": "123", "rows": []}
+    assert sections["verified_trades"] == {"account_id": "123", "rows": []}
 
 
 def test_status_digest_ignores_only_the_advancing_clock(server):
@@ -534,7 +539,9 @@ def test_dashboard_stream_pushes_only_changed_sections(settings, tmp_path):
         response = client.getresponse()
         assert response.status == 200 and response.getheader('Content-Type').startswith('text/event-stream')
         first = json.loads(frame(response).decode().removeprefix('data: '))
-        assert set(first) == {'revision', 'status', 'events', 'capture_events', 'mappings', 'broker_profiles'}
+        assert set(first) == {'revision', 'status', 'events', 'capture_events', 'mappings', 'broker_profiles',
+                              'copy_controls', 'paper_sends', 'verified_trades'}
+        assert first['copy_controls']['mode'] == 'paper' and first['verified_trades']['rows'] == []
         assert isinstance(first['revision'], int) and first['status']['signal_copying'] is False
         # A wake without new evidence only heartbeats: server_time alone never forces a resend.
         controller.native_store.notify_stream()
@@ -545,6 +552,8 @@ def test_dashboard_stream_pushes_only_changed_sections(settings, tmp_path):
         assert pushed['revision'] > first['revision']
         assert pushed['capture_events']['events'][0]['event_id'] == 'stream-1'
         assert 'broker_profiles' not in pushed and 'events' not in pushed
+        # No send, no controls change, no new evidence: the ledger sections are not resent.
+        assert not {'copy_controls', 'paper_sends', 'verified_trades'} & set(pushed)
         response.close()
     finally:
         client.close()
@@ -552,3 +561,115 @@ def test_dashboard_stream_pushes_only_changed_sections(settings, tmp_path):
         actual.server_close()
         worker.join(timeout=3)
         controller.close()
+
+
+# --- Verified-trade ledger: copy controls and explicit sends over HTTP ---
+
+def ledger_signal(event_id="send-1", order_id="order-1", source="MANUAL"):
+    from datetime import UTC, datetime
+
+    from matchtrader.capture.event import CaptureEvent
+
+    return CaptureEvent(
+        event_id=event_id, machine="qt", connection_id="connection", account_id="source", order_id=order_id,
+        request_id="run:" + order_id, emitted_at=datetime.now(UTC), kind="ACCEPTED", action="CREATE",
+        source=source, symbol="EURUSD", side="BUY", order_type="LIMIT", quantity="1", price="1.15000",
+        sl="1.14980", tp="1.16",
+    )
+
+
+def test_copy_controls_endpoint_defaults_to_paper_all_off_and_replaces_the_whole_state(server):
+    headers = {"X-Session-Token": "test-session"}
+    safe = {"mode": "paper", "sources": {"P01": False, "X17": False, "MANUAL": False}}
+    status, body = call(server, "/api/copy-controls", headers=headers)
+    assert status == 200 and json.loads(body) == safe
+    everything = {"mode": "live", "sources": {"P01": True, "X17": True, "MANUAL": True}}
+    status, body = call(server, "/api/copy-controls", "POST", everything, headers)
+    assert status == 200 and json.loads(body) == everything
+    # The front end posts the desired state, never a patch: omitted sources are off.
+    status, body = call(server, "/api/copy-controls", "POST", {"mode": "paper", "sources": {"X17": True}}, headers)
+    assert (status, json.loads(body)) == (200, {"mode": "paper", "sources": {"P01": False, "X17": True, "MANUAL": False}})
+    status, body = call(server, "/api/copy-controls", "POST", {"mode": "auto", "sources": {}}, headers)
+    assert status == 400 and "mode" in json.loads(body)["error"]
+    status, body = call(server, "/api/copy-controls", "POST", {"mode": "paper", "sources": {"R01": True}}, headers)
+    assert status == 400 and "R01" in json.loads(body)["error"]
+    assert Handler.dashboard_sections(server.controller, [])["copy_controls"]["sources"]["X17"] is True
+
+
+def test_trade_send_endpoint_paper_records_the_text_volume_and_never_reads_as_verified(server):
+    headers = {"X-Session-Token": "test-session"}
+    controller = server.controller
+    trade_id = controller.native.receive(ledger_signal().model_dump())["trade_id"]
+    # Captured is not eligible: the source is off by default.
+    status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_id, "volume": "0.25"}, headers)
+    assert status == 400 and "MANUAL is not enabled" in json.loads(body)["error"]
+    call(server, "/api/copy-controls", "POST", {"mode": "paper", "sources": {"MANUAL": True}}, headers)
+    sections = Handler.dashboard_sections(controller, [])
+    (row,) = sections["verified_trades"]["rows"]
+    assert row["state"] == "candidate" and row["source_enabled"] is True and row["verified"] is False
+    status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_id, "volume": "0.25"}, headers)
+    result = json.loads(body)
+    assert status == 200 and result["mode"] == "paper" and result["request"]["volume"] == "0.25"
+    assert result["broker_order_id"] == "" and result["broker_position_id"] == ""
+    sections = Handler.dashboard_sections(controller, [])
+    (row,) = sections["verified_trades"]["rows"]
+    assert row["state"] == "paper_sent" and row["verified"] is False and row["destination"]["position_ids"] == []
+    (paper,) = sections["paper_sends"]["rows"]
+    assert paper["trade_id"] == trade_id and paper["lots"] == "0.25" and paper["request"]["volume"] == "0.25"
+    assert sections["paper_sends"]["account_id"] == "123"
+    trade = controller.native_store.trade(trade_id)
+    assert trade["state"] == "observed" and trade["destination"] == "" and trade["broker_order_id"] == ""
+    assert controller.native_store.db.execute("SELECT COUNT(*) FROM destination_observations").fetchone()[0] == 0
+    status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_id, "volume": "0.25"}, headers)
+    assert status == 400 and "already sent" in json.loads(body)["error"]
+    for bad in ({"volume": "0.25"}, {"trade_id": trade_id}, {"trade_id": trade_id, "volume": "abc"},
+                {"trade_id": trade_id, "volume": 0}, {"trade_id": "missing", "volume": "0.25"}):
+        assert call(server, "/api/trades/send", "POST", bad, headers)[0] == 400
+
+
+def test_trade_send_endpoint_live_is_refused_without_a_write_enabled_connection(server):
+    headers = {"X-Session-Token": "test-session"}
+    controller = server.controller
+    trade_id = controller.native.receive(ledger_signal().model_dump())["trade_id"]
+    call(server, "/api/copy-controls", "POST", {"mode": "live", "sources": {"MANUAL": True}}, headers)
+    status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_id, "volume": "0.25"}, headers)
+    assert status == 400 and "writes are disabled" in json.loads(body)["error"]
+    store = controller.native_store
+    assert store.db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM paper_sends").fetchone()[0] == 0
+    assert store.trade(trade_id)["state"] == "observed"
+
+
+def test_ledger_sections_are_digest_stable_with_real_evidence_on_record(server):
+    from matchtrader.models.position import Position
+
+    headers = {"X-Session-Token": "test-session"}
+    controller = server.controller
+    store = controller.native_store
+    call(server, "/api/copy-controls", "POST", {"mode": "paper", "sources": {"MANUAL": True, "X17": True}}, headers)
+    paper = controller.native.receive(ledger_signal("s1", "o1").model_dump())["trade_id"]
+    controller.native.receive(ledger_signal("s2", "o2", "P01").model_dump())
+    live = controller.native.receive(ledger_signal("s3", "o3", "X17").model_dump())["trade_id"]
+    assert call(server, "/api/trades/send", "POST", {"trade_id": paper, "volume": "0.25"}, headers)[0] == 200
+    store.update(live, destination="123", broker_position_id="p1", state="open", lots="0.02")
+    store.observe_positions(live, "123", [Position(id="p1", symbol="EURUSD", side="BUY", volume="0.02",
+                                                  openPrice="1.15", openTimeMillis=1789000000000)])
+    controller.tradingbox_forwarder = SimpleNamespace(
+        url="https://tradingbox.pro/api/hcamm/events", api_key="k", auth_header="X-HCAMM-Key",
+        ticket=lambda: (1, True, True), send=lambda *a, **k: (200, "OK", [], b"{}"), close=lambda: None,
+        status=lambda: {"enabled": True, "live": True, "url": "https://tradingbox.pro/api/hcamm/events"},
+    )
+    controller._publish_verified()
+    first = Handler.dashboard_sections(controller, [])
+    second = Handler.dashboard_sections(controller, [])
+    states = {r["trade_id"]: (r["state"], r["verified"], r["pamm"]) for r in first["verified_trades"]["rows"]}
+    assert states[paper] == ("paper_sent", False, None)
+    assert states[live][:2] == ("verified_open", True) and states[live][2]["published"] is True
+    assert len(first["paper_sends"]["rows"]) == 1
+    for name in first:
+        assert Handler.section_digest(name, first[name]) == Handler.section_digest(name, second[name]), name
+    # A wake with nothing new leaves every ledger digest where it was.
+    store.notify_stream()
+    third = Handler.dashboard_sections(controller, [])
+    for name in ("copy_controls", "paper_sends", "verified_trades", "mappings"):
+        assert Handler.section_digest(name, first[name]) == Handler.section_digest(name, third[name]), name

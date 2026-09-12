@@ -17,3 +17,4 @@ main{margin-left:218px;max-width:1800px;width:calc(100% - 218px);padding:42px 38
 .mapping-row .check { grid-column: span 3; }
 .copy-settings details { margin-top: 24px; line-height: 1.6; }
 @media (max-width: 800px) { .settings-grid, .mapping-row { grid-template-columns: 1fr; } .mapping-row .check { grid-column: auto; } }
+.mode-pill.copy-live{background:#9b2226;color:#fff;border-color:#9b2226;font-weight:700}

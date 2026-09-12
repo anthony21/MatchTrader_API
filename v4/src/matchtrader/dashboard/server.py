@@ -12,10 +12,13 @@ from pathlib import Path
 from threading import BoundedSemaphore, Event, Thread
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from pydantic import ValidationError
+
 from ..bridge.server import MAX_BODY, ingest
 from ..capture.logging_store import MAX_LOG_BODY
 from ..capture.meaning import catalog
 from ..capture.tradingbox_forwarder import MAX_REQUEST, end_to_end, validate_target
+from . import ledger_view
 
 MAX_SIGNAL_BODY = 1024 * 1024
 
@@ -103,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, forwarder.status() if forwarder else {'enabled': False, 'live': False, 'key_configured': False, 'url': ''})
             if path == "/api/copy-settings":
                 return self.reply(200, self.server.controller.copy_settings())
+            if path == "/api/copy-controls":
+                return self.reply(200, self.server.controller.copy_controls_view())
             if path == "/api/event-meanings":
                 return self.reply(200, catalog())
             if path == "/api/status":
@@ -150,15 +155,27 @@ class Handler(BaseHTTPRequestHandler):
     def dashboard_sections(controller, events):
         """Everything the shell used to poll for, built once per committed change."""
         with controller.lock:
-            mappings = {"account_id": controller.selected,
-                        "mappings": controller.native_store.mapping_view(controller.selected)}
+            account = controller.selected
+            store = controller.native_store
+            snapshots = store.mapping_view(account)
+            # One pass: the ledger sections are derived from the same 200-row snapshot list as
+            # `mappings`, plus two id-scoped lookups (publications, paper sends), not a rescan.
+            ids = [snapshot["trade_id"] for snapshot in snapshots]
+            controls = controller.copy_controls
+            verified = ledger_view.verified_trades(
+                snapshots, controls, controller.pamm.publications(ids),
+                ledger_view.paper_sent_ids(store, ids), account)
+            paper = ledger_view.paper_sends(store, account)
         profiles = controller.broker_profiles
         return {
             "status": controller.status(),
             "events": controller.feed(),
             "capture_events": {"events": events + controller.p01_log.feed() + controller.source_signal_feed()},
-            "mappings": mappings,
+            "mappings": {"account_id": account, "mappings": snapshots},
             "broker_profiles": profiles.snapshot() if profiles else {"profiles": [], "limit": 5},
+            "copy_controls": controls.model_dump(mode="json"),
+            "paper_sends": paper,
+            "verified_trades": verified,
         }
 
     @staticmethod
@@ -437,6 +454,19 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.refresh_positions()
             elif self.path == "/api/copy-settings":
                 result = controller.configure_copying(payload)
+            elif self.path in {"/api/copy-controls", "/api/trades/send"}:
+                # Refusals here are the owner's working information (which source is off, why a
+                # volume is invalid, why a trade is no longer a candidate): return the real reason.
+                try:
+                    result = (controller.configure_copy_controls(payload) if self.path == "/api/copy-controls"
+                              else controller.send_trade(payload))
+                except ValidationError as exc:
+                    controller.native_store.notify_stream()
+                    return self.reply(400, {"error": "; ".join(
+                        ".".join(str(p) for p in e["loc"]) + ": " + e["msg"] for e in exc.errors())})
+                except ValueError as exc:
+                    controller.native_store.notify_stream()
+                    return self.reply(400, {"error": str(exc)})
             elif self.path == "/api/copying":
                 result = controller.set_copying(payload.get("enabled"))
             elif self.path == '/api/signal-copy-settings':
