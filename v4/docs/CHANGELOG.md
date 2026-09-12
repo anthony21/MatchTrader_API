@@ -7,6 +7,11 @@ matching the Python and frontend package version.
 
 ## Unreleased - automatic cancel and close for trades already sent
 
+Copy Settings now exposes the shared broker Live/Paper switch directly. TradingBox
+forwarding has just its destination URL, Save, and one On/Off switch; On enables
+actual forwarding, Off disables both former gates. No mode is changed on page load.
+Broker opening still requires the existing per-trade Send action.
+
 X17 `/capture/signals` requests and receiver replies now enter the live Raw Data
 feed directly, including receiver errors. Unauthenticated traffic stays excluded.
 The existing relay archive remains unchanged. Forwarding also accepts operator-chosen

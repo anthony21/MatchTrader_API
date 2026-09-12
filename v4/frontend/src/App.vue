@@ -189,6 +189,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         </details>
       </template>
       <template v-else-if="page === 'settings'">
+        <CopyControls :pushed="copyControls" />
         <CopySettings :state="state" />
         <SignalCopySettings :state="state" />
       </template>

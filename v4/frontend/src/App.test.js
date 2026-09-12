@@ -266,8 +266,7 @@ test('without the ledger sections the new pages render the safe, honest empty st
   expect(wrapper.find('.mode-pill').text()).toContain('Copy paper')
   await wrapper.findAll('button').find(b => b.text() === 'Verified trades').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('has not reported copy controls yet')
-  expect(wrapper.find('[aria-label="Copy controls"] [role=status]').text()).toBe('PAPER · nothing is sent to a broker')
+  expect(wrapper.find('[aria-label="Live or Paper"]').element.disabled).toBe(true)
   expect(wrapper.text()).toContain('No verified trade records for this account yet')
   await wrapper.findAll('button').find(b => b.text() === 'Paper trades').trigger('click')
   await flushPromises()
@@ -285,4 +284,23 @@ test('a page query opens that page directly', async () => {
   expect(wrapper.find('h1').text()).toBe('Event logging')
   wrapper.unmount()
   window.history.replaceState({}, '', '/')
+})
+
+test('Copy settings exposes the shared broker Live or Paper switch', async () => {
+  request.mockImplementation(async (path, body) => {
+    if (path === 'copy-controls') return body
+    if (path === 'copy-settings') return { inventory: [], csv_limit: 1000 }
+    return { config: null }
+  })
+  push({ ...full, copy_controls: { mode: 'paper', sources: { P01: true, X17: true, MANUAL: false } } })
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find(b => b.text() === 'Copy settings').trigger('click')
+  await flushPromises()
+  const toggle = wrapper.find('[aria-label="Live or Paper"]')
+  expect(toggle.text()).toBe('Paper')
+  await toggle.trigger('click'); await flushPromises()
+  expect(request).toHaveBeenCalledWith('copy-controls', { mode: 'live', sources: { P01: true, X17: true, MANUAL: false } })
+  expect(toggle.text()).toBe('Live')
+  wrapper.unmount()
 })
