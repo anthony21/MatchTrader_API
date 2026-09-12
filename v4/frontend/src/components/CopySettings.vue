@@ -38,7 +38,7 @@ async function save() {
       destination_account: destination.value, sources: sources.value, symbols,
       exclusive_destination: exclusive.value, legacy_route_disabled: legacyDisabled.value,
     } })
-    message.value = 'Settings saved. Allow API trading on the Trading bridge page when ready.'
+    message.value = 'Settings saved. Nothing is sent automatically: switch a source on in Copy controls and send each trade from the Verified trades page.'
     emit('saved')
   } catch (err) { error.value = err.message }
   finally { busy.value = false }
@@ -49,10 +49,9 @@ async function save() {
   <section class="card copy-settings">
     <h2>Copy settings</h2>
     <TradingBoxForwarding :pushed="state?.tradingbox_forwarding" />
-    <p>Use the quantities, entry, SL and TP actually submitted by Quantower. Saving settings keeps copying off.</p>
-    <p v-if="state.copying" role="alert">Stop API trading on the Trading bridge page before editing settings.</p>
+    <p>Use the quantities, entry, SL and TP actually submitted by Quantower. Saving settings sends nothing: automatic dispatch is disabled and every trade is sent individually from the Verified trades page.</p>
     <form @submit.prevent="save">
-      <fieldset :disabled="busy || state.copying">
+      <fieldset :disabled="busy">
         <legend>Source and destination</legend>
         <label>Detected Quantower account
           <select aria-label="Detected Quantower account" :value="inventory.findIndex(item => item.machine === machine && item.connection_id === connection && item.account_id === account)" @change="selectSource"><option value="-1">Choose an account</option>
@@ -71,7 +70,7 @@ async function save() {
         </div>
         <p class="quiet">P01 manual orders carry a P01RR_ label. R01, X17, mirrored P01 labels and unknown sources are excluded from these selections.</p>
       </fieldset>
-      <fieldset :disabled="busy || state.copying">
+      <fieldset :disabled="busy">
         <legend>Symbol and quantity mapping</legend>
         <p>Destination lots = submitted Quantower quantity × multiplier. P01’s risk amount (%) is not its submitted quantity. Confirm the conversion for each instrument.</p>
         <div v-for="(row, index) in rows" :key="index" class="mapping-row">
@@ -84,7 +83,7 @@ async function save() {
         </div>
         <button type="button" class="secondary" @click="rows.push({ source: '', destination: '', quantity_multiplier: '1', max_lots: '1', same_price_scale: false })">Add symbol</button>
       </fieldset>
-      <fieldset :disabled="busy || state.copying">
+      <fieldset :disabled="busy">
         <legend>Copy controls</legend>
         <label>Recent trades kept in CSV<input v-model="csvLimit" type="number" min="1" max="100000" required /></label>
         <p class="quiet">Persistent trade IDs remain in SQLite after CSV rollover to prevent repeated submissions.</p>
@@ -97,8 +96,8 @@ async function save() {
     <p v-if="message" role="status">{{ message }}</p>
     <details open><summary>P01 RR setup</summary>
       <p>Choose Manual mode (0) in P01, select the intended chart account, and set its risk/size, entry, SL and TP. This integration captures its accepted native orders. P01 must submit to Quantower: with “Arm live orders” off, or its companion panel forcing signal-only delivery, no native order is available to copy.</p>
-      <p>The capture extension logs QT requests and the separate Aqua result in Strategy Manager’s Time/Message board. Start capture and connect the destination, then use Allow API trading on the Trading bridge page. Existing orders and events received while copying is off are not replayed.</p>
-      <p>Stop API trading disables all forwarding, including edits, cancellations and closes. Existing Aqua orders remain at the broker. Copying starts off after every application restart.</p>
+      <p>The capture extension logs QT requests and the separate Aqua result in Strategy Manager’s Time/Message board. Start capture and connect the destination, then switch the source on in Copy controls and send each candidate from the Verified trades page. Nothing is sent on arrival and nothing is replayed.</p>
+      <p>Copy controls come back in paper mode after every application restart; going live is a deliberate action in the running session. Existing Aqua orders remain at the broker.</p>
     </details>
   </section>
 </template>

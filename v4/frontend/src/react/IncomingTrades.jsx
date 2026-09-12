@@ -8,7 +8,7 @@ const bracket = v => !v || Number(v) === 0 ? '—' : number(v)
 const sourceCode = e => e.meaning?.source?.code ?? 'UNKNOWN'
 const sources = ['ALL', 'R01', 'X17', 'P01', 'MANUAL', 'UNKNOWN']
 
-export default function IncomingTrades({ events = [], legacyEvents = [], state = {}, busy, onToggle, streamStatus }) {
+export default function IncomingTrades({ events = [], legacyEvents = [], state = {}, streamStatus }) {
   const [accounts, setAccounts] = useState([])
   const [source, setSource] = useState('ALL')
   const [kind, setKind] = useState('ALL')
@@ -25,12 +25,9 @@ export default function IncomingTrades({ events = [], legacyEvents = [], state =
   const socket = state.capture_websocket || {}
   const timing = socket.metrics || {}
   const ms = value => typeof value === 'number' ? `${value.toFixed(2)} ms` : 'Not measured'
-  const ready = state.route_configured && state.running && state.connection === 'connected'
   return <section className="card incoming-workspace" aria-label="Incoming trade activity">
     <div className="incoming-heading"><div><div className="incoming-eyebrow">INCOMING EVENT STREAM <span role="status" className="stream-status">{streamStatus === 'live' ? '● Live push' : streamStatus === 'reconnecting' ? 'Reconnecting · polling fallback' : 'Connecting…'}</span></div>
-      <h2>Incoming trades</h2><p>Follow the account, strategy and lifecycle of every source event.</p></div>
-      <button className={state.copying ? 'secondary' : 'primary'} disabled={busy || (!state.copying && !ready)} onClick={onToggle}>
-        {state.copying ? 'Stop API trading' : 'Allow API trading'}</button></div>
+      <h2>Incoming trades</h2><p>Follow the account, strategy and lifecycle of every source event.</p></div></div>
     <div className="capture-connection" aria-label="Quantower receiver status">
       <div><span>Quantower WebSocket</span><strong>{socket.connected_senders ? `${socket.connected_senders} sender connected` : socket.listening ? 'Listening · waiting for sender' : 'Receiver disabled'}</strong>
         <small>{socket.machines?.join(', ') || socket.endpoint || 'Configure the receiver and bridge token'}</small></div>
@@ -90,8 +87,8 @@ export default function IncomingTrades({ events = [], legacyEvents = [], state =
       </tbody></table>
     </div>
     <div className="incoming-footer"><span>{visible.length} of {rows.length} events · latest 200 native + 200 legacy events</span><span>Position observations and accepted requests do not confirm a new fill.</span></div>
-    <div className="incoming-routing"><strong>API trading {state.copying ? 'enabled' : 'off'}</strong>
-      <p>{state.copying ? 'Eligible trades forward to the configured demo account. Stopping also stops edits, cancellations and closes; existing broker orders remain open.' : ready ? 'Use Allow API trading to forward eligible trades to the verified demo destination.' : 'Connect the demo destination, start capture, and configure the source account, symbol mapping and quantity conversion in Copy settings.'}</p>
+    <div className="incoming-routing"><strong>Automatic dispatch off</strong>
+      <p>Captured events are candidates only and are never sent on arrival. Switch a source on in Copy controls and send each trade yourself from the Verified trades page.</p>
       {state.csv_export_error && <p role="alert">CSV update failed. Close the CSV in Excel; the persistent trade journal is intact.</p>}
       {state.reconciliation_message && <p role="alert">{state.reconciliation_message}</p>}
     </div>

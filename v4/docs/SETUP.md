@@ -1,5 +1,19 @@
 # Install and run v4 0.8.2
 
+## Current release 1.0.0
+
+Release 1.0.0 adds the verified-trade ledger, the Verified trades and Paper trades
+pages and the Paper/Live copy controls; see [verified trades](VERIFIED_TRADES.md) and
+[the dashboard notes](DASHBOARD.md). Before the first run of 1.0.0 on an existing
+installation, stop the dashboard and back up
+`data/dashboard/quantower/capture.sqlite3` together with any `capture.sqlite3-wal`
+and `capture.sqlite3-shm` files: the mapping journal schema moves from 1.0.0 to 1.1.0
+in place on first open, the migration is forward-only, and older code refuses a
+migrated journal. Copy controls start as paper with every source off; a live send
+additionally requires `MTR_ENABLE_WRITES=true` in the dashboard's environment and a
+connected destination account. The version check at the end of this guide should show
+1.0.0 for the current checkout.
+
 For the current 0.9.0 workspace, **Choose broker login** opens the named .env
 profile selector. **Log in and list accounts** retrieves the broker's account
 choices; **Use selected account** opens the selected session. Account IDs can

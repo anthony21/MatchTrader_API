@@ -88,8 +88,10 @@ def test_connect_discovers_accounts_and_stop_closes_owner(settings, tmp_path):
         assert status["positions"][0]["netProfit"] == "0"
         assert status["positions"][0]["openTimeMillis"] == 1789000000000
         assert "do-not-expose" not in json.dumps(status)
-        with pytest.raises(ValueError):
+        # Automatic dispatch cannot be armed from any state; the refusal says where sends happen.
+        with pytest.raises(ValueError, match=r"Automatic dispatch is disabled.*Verified trades page"):
             controller.set_copying(True)
+        assert controller.native.armed is False and controller.status()["copying"] is False
         controller.stop()
         assert api.closed
         assert controller.status()["connection"] == "disconnected"
@@ -366,8 +368,10 @@ def test_signal_arming_requires_connected_destination_and_stop_disarms(settings,
             controller.set_signal_copying('yes')
         assert controller.set_signal_copying(True)['live'] is True
         assert controller.status()['signal_copying'] is True
-        with pytest.raises(ValueError, match='signal copying off'):
+        # Native copying is refused for the rule itself, not merely because signal copying is on.
+        with pytest.raises(ValueError, match='Automatic dispatch is disabled'):
             controller.set_copying(True)
+        assert controller.native.armed is False
         with pytest.raises(ValueError):
             controller.configure_signals(config(destination_account='123'))
         controller.stop()

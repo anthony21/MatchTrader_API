@@ -5,6 +5,46 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## 1.0.0 - verified-trade ledger, copy controls and push-only shell
+
+Record, for every copied trade, the broker's own read-back as the only proof of
+arrival. A trade is verified only when an open-positions or closed-history read
+returned its exact position id with matching symbol and side and carried
+AquaFunded's own open time; a write response can never verify it. Verified open
+and verified closed are the only verified states. Local-clock and broker-clock
+timestamps stay in separate labelled columns. Every failed or unconfirmed write
+records an investigable reason with origin broker, local, transport or unconfirmed;
+nothing is recorded as a bare unknown. See VERIFIED_TRADES.md.
+
+Copy controls add a Paper/Live master switch and per-source switches for P01, X17
+and MANUAL, persisted in data/dashboard/copy-controls.json and defaulting to paper
+with every source off. An enabled source is eligible and visible; nothing is sent
+automatically. Sending is an explicit action on a candidate row with lot size as the
+only editable field, sent at most once in either mode. Paper records the exact
+request and never contacts the broker; Live also requires MTR_ENABLE_WRITES=true
+and the connected destination account. TradingBox PAMM publication happens only
+after verification, is recorded per attempt, is never retried automatically and
+never confirms or invalidates a trade.
+
+New Verified trades and Paper trades pages. The shell no longer polls its own API:
+status, feeds, mappings, broker profiles, copy controls, verified trades and paper
+sends arrive on one authenticated stream and only changed sections are resent.
+Broker orders and positions, which live upstream, refresh every five seconds only
+while connected with orders or positions outstanding. X17/P01 ingestion from the
+x.0.1 workspace, the local relay and the Start/Stop launcher are included in this
+release; the P01 diagnostic log is observed only.
+
+The major version is incremented because the mapping journal schema moves from
+1.0.0 to 1.1.0 and the change is not backward compatible. A 1.0.0 journal is
+migrated in place on first open, forward-only; older code cannot open a migrated
+journal and there is no downgrade path. Back up
+data/dashboard/quantower/capture.sqlite3 (with any -wal and -shm files) before the
+first run. Event schema stays 1.1.0. Known limits: a trade resolved by a close
+write response is not revisited for closed-history read-back and stays verified
+open; two identical closes without broker execution ids collapse to one row, which
+can only under-count closure; live end-to-end copying to AquaFunded is not
+established by the test suite.
+
 ## 0.9.1 - platform-first login and session status
 
 Show only PLATFORM_NAME in the first dropdown, with login beside it and that
@@ -109,7 +149,7 @@ validated application.
 
 ## Future patches
 
-Add the newest release above 0.6.0, stating the user-visible problem, resulting
+Add the newest release above 1.0.0, stating the user-visible problem, resulting
 behavior, relevant validation and any remaining limits. Keep commits focused;
 several commits may belong to one release. Do not increment a version for every
 documentation or test commit. Keep package versions aligned and tag the tested

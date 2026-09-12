@@ -1,0 +1,41 @@
+
+Your latency reasoning is sound, and I have measured numbers for it: tonight's relay→TradingBox round trip ran a median of 688 ms, but p95 was 19.6 s and the worst was 30.1 s before the upstream started returning 522s. Cutting that hop out is a real gain, not a theoretical one.
+
+But the lag I flagged isn't that hop — it's upstream of the relay, so local interception doesn't remove it. Let me check whether it's actually typical, since your signal store has history:
+
+  Ran 2 shell commands
+
+I understand the design, and it's sound — but this data says the freshness rule is a real problem, not a theoretical one.
+
+Publisher-to-receiver lag across all 77 stored signals:
+
+┌────────────┬──────────────────────┐
+│            │                      │
+├────────────┼──────────────────────┤
+│ min        │ 0.007 s              │
+├────────────┼──────────────────────┤
+│ median     │ 6,445 s (~1.8 hours) │
+├────────────┼──────────────────────┤
+│ p90        │ 20,307 s (~5.6 h)    │
+├────────────┼──────────────────────┤
+│ max        │ 22,721 s (~6.3 h)    │
+├────────────┼──────────────────────┤
+│ Under 30 s │ 30 of 77 (39%)       │
+└────────────┴──────────────────────┘
+
+So 61% of your signals arrived more than 30 seconds after their own timestampUtc. Under the copy rule — signals must be under 30 seconds old — those 47 get discarded, live button or not. The 590-second case I saw this morning wasn't an outlier; the median is worse.
+
+The good news is it's clearly bimodal. Some arrive in 7–35 milliseconds — the two 19:14 and 19:17 US 500 intents landed in 35 ms and 7 ms. So the publisher can deliver instantly. Something else produces the multi-hour cohort: backfill on reconnect, replay after a restart, or a buffer flushing when the relay comes back. Those hours-old arrivals look like catch-up batches, not live signals.
+
+That distinction is what decides your design. If live-path signals genuinely arrive in milliseconds and only replayed ones are stale, the 30-second rule is doing exactly the right job — it's protecting you from opening positions on hours-old levels that have long since been invalidated. You'd want to keep it.
+
+Every signal so far has been held anyway:
+
+41  held      'Live signal copying is off'
+36  captured  'Local logging; no copy attempted'
+
+Nothing has ever been copied, so none of this has been exercised against a live broker yet.
+
+On your latency argument — going direct is faster, and measurably so. Just note that the saving is the TradingBox hop, which tonight was 688 ms median. The lag above happens before the relay sees anything, so intercepting earlier doesn't touch it. Two separate delays; local interception fixes one of them.
+
+Nothing touched. Come back when your edit lands.

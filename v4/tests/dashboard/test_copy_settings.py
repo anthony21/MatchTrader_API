@@ -63,9 +63,14 @@ def test_runtime_settings_keep_existing_connection_and_restart_disarmed(settings
         assert c.configure_copying(payload())["route"]["sources"] == ["P01"]
         assert c.api is session and c.status()["connection"] == "connected"
         assert c.native_store.limit == 25
-        c.native.armed = True
-        with pytest.raises(ValueError, match="Stop copying"):
-            c.configure_copying(payload())
+        # Even with a connected, write-enabled session and a saved route - the exact state that
+        # used to arm the router - automatic dispatch is refused and settings stay editable.
+        c.start_capture()
+        with pytest.raises(ValueError, match="Automatic dispatch is disabled"):
+            c.set_copying(True)
+        assert c.native.armed is False and c.native.armed_at is None
+        assert c.configure_copying(payload())["route"]["sources"] == ["P01"]
+        assert c.set_copying(False)["copying"] is False  # disarming is still an accepted no-op
     finally:
         c.close()
     c = DashboardController(settings, tmp_path, interactive_copying=True)

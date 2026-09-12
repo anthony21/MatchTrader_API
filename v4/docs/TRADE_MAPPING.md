@@ -2,7 +2,9 @@
 
 The workspace remains `v4/`. Release versions use `major.minor.patch`: major for
 breaking contracts, minor for compatible capabilities, patch for compatible fixes.
-Event schema **1.1.0** and mapping schema **1.0.0** are versioned independently.
+Event schema **1.1.0** and mapping schema **1.0.0** are versioned independently
+(release 1.0.0 moves the mapping journal schema to **1.1.0**, forward-only; see
+[verified trades](VERIFIED_TRADES.md)).
 The receiver accepts legacy integer `1` and string `1.0.0` events as well.
 The stable HTTP User-Agent remains `hcamm-matchtrader/0.1.0` for broker compatibility;
 it is not a release-version indicator. `/api/status` exposes the release and schema versions.

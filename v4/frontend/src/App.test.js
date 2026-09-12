@@ -107,7 +107,7 @@ test('Trading bridge keeps account controls, status grid and token panel, and st
   const wrapper = mount(App)
   await flushPromises()
   expect(wrapper.find('select').element.value).toBe('123')
-  expect(wrapper.text()).toContain('API trading off')
+  expect(wrapper.text()).toContain('Automatic dispatch off')
   expect(wrapper.text()).toContain('TradingBox preview')
   expect(wrapper.find('[aria-label="Service status"]').exists()).toBe(true)
   for (const label of ['BRIDGE', 'BROKER CONNECTION', 'ACCOUNT IN VIEW']) expect(wrapper.text()).toContain(label)
@@ -157,7 +157,7 @@ test('a frame carrying one section leaves the others in place and unchanged sect
   feed.deliver({ capture_events: { events: [{ id: 'two', symbol: 'SECOND', kind: 'POSITION' }] } })
   await flushPromises()
   expect(wrapper.text()).toContain('SECOND')
-  expect(wrapper.text()).toContain('API trading off')
+  expect(wrapper.text()).toContain('Automatic dispatch off')
   expect(wrapper.find('select').element.value).toBe('456')
   // A new status object is applied and moves the selection with the account in view.
   feed.deliver({ status: { ...status, account_id: '789', accounts: [{ id: '123' }, { id: '456' }, { id: '789' }] } })

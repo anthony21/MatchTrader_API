@@ -119,12 +119,6 @@ async function openPage(value) {
   page.value = value
   if (value === 'orders' && state.value.connection === 'connected' && !busy.value) await refreshBroker()
 }
-async function toggleCopying() {
-  busy.value = true
-  try { state.value = await request('copying', { enabled: !state.value.copying }) }
-  catch (err) { error.value = err.message }
-  finally { busy.value = false }
-}
 async function action(name) {
   busy.value = true
   activeAction.value = name
@@ -161,7 +155,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <header>
         <div><div class="eyebrow">QUANTOWER → MATCH-TRADER</div><h1>{{ TITLES[page] || 'Trading bridge' }}</h1>
           <p>{{ DESCRIPTIONS[page] || 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
-        <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>{{ state.copying ? 'API trading enabled' : 'API trading off' }} · TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
+        <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>Automatic dispatch off · TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
       <AccountControls v-if="page !== 'brokers'" :state="state" v-model:selected="selected" :busy="busy"
@@ -178,7 +172,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <TokenSession v-if="OVERVIEW_PAGES.includes(page)" :state="state" :busy="busy" :refreshing="activeAction === 'token/refresh'"
         @refresh="action('token/refresh')" />
       <template v-if="page === 'bridge'">
-      <NativeEvents :events="nativeEvents" :legacy-events="events" :stream-status="streamStatus" :state="state" :busy="busy" @toggle="toggleCopying" />
+      <NativeEvents :events="nativeEvents" :legacy-events="events" :stream-status="streamStatus" :state="state" :busy="busy" />
       </template>
       <template v-else-if="page === 'verified'">
         <CopyControls :pushed="copyControls" />

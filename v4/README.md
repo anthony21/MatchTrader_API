@@ -2,8 +2,13 @@
 
 # Match-Trader Python client
 
-Current release: **0.9.1**. Use **Choose broker login** to select a named .env profile,
+Current release: **1.0.0**. Use **Choose broker login** to select a named .env profile,
 log in, then choose one of its returned trading accounts. See [broker login setup](docs/BROKER_PROFILES.md).
+The **Verified trades** page records the broker's own read-back as the only proof that a
+copied trade arrived; **Paper trades** lists requests composed in paper mode; **Copy
+controls** hold the Paper/Live master switch, defaulting to paper with every source off.
+See [verified trades](docs/VERIFIED_TRADES.md). Back up `data/dashboard/quantower/capture.sqlite3`
+before first running 1.0.0 on an existing installation: the journal schema migration is forward-only.
 Start with the [installation guide](docs/SETUP.md). See [trade mappings and the C# event contract](docs/TRADE_MAPPING.md)
 for separate source/broker IDs, partial fills, split/merged positions and schema versions.
 
@@ -26,7 +31,7 @@ npm.cmd --prefix frontend run build
 poetry run python -m matchtrader.dashboard.cli
 ```
 
-Open **http://127.0.0.1:8765**. Select an account and use **Connect account** to log in and discover other accounts. **Start capture** records new R01 ledger observations and accepts authenticated events; **Stop & disconnect** stops capture and closes the SDK connection. The dashboard remains available to restart capture. It starts stopped with copying disarmed. Native copying additionally needs saved Copy settings (or an explicit route file), a verified demo account and the Allow API trading control; `.env` alone cannot arm it.
+Open **http://127.0.0.1:8765**. Select an account and use **Connect account** to log in and discover other accounts. **Start capture** records new R01 ledger observations and accepts authenticated events; **Stop & disconnect** stops capture and closes the SDK connection. The dashboard remains available to restart capture. It starts stopped with copying disarmed and copy controls on paper. The shell receives status, feeds, mappings, copy controls, verified trades and paper sends over one authenticated stream and does not poll its own API; only upstream broker orders and positions are refreshed on a timer, and only while work is outstanding. Native copying additionally needs saved Copy settings (or an explicit route file), a verified demo account and the Allow API trading control; `.env` alone cannot arm it.
 
 Set `MTR_R01_LEDGER` to your local `R01_TRADES.csv` path to watch new strategy activity. The frontend displays observations, request previews, held events, and an independently refreshed broker pending-order snapshot. No historic ledger replay or invented lot sizes. See [dashboard setup](docs/DASHBOARD.md), [registration and first connection](docs/FIRST_CONNECTION.md), and [routing status](docs/DIRECT_ROUTING.md).
 

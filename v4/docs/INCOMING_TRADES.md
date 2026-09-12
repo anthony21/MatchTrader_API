@@ -88,6 +88,9 @@ from one to ten seconds; missing heartbeats abort the connection after 25 second
 When push is unavailable, the existing 1.5-second native poll is the recovery path.
 Legacy CSV/control status still refresh at 1.5 seconds; Orders still use five-second
 broker snapshots. The C# sender and trade routing were not changed by this release.
+(Release 1.0.0 removed the shell's own polling: every locally known section now
+arrives on `GET /api/stream`, and the reconnect path is a fresh stream snapshot, not a
+poll. See [DASHBOARD.md](DASHBOARD.md#push-only-shell).)
 
 Validation: 258 Python tests, 29 frontend tests, six Chrome end-to-end checks,
 production build and Ruff. Tests cover authenticated streaming on loopback,

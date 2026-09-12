@@ -32,6 +32,17 @@ from .signal_copy import SignalCopy
 
 DEFAULT_P01_LOG_PATH = 'C:/Quantower/Settings/Scripts/Indicators/_HCAMM_Shared/P01_RR.log'
 
+# The owner's rule: a captured signal is a candidate and reaches the broker only through an
+# explicit per-trade send. The armed CaptureRouter was the one path that dispatched on arrival,
+# so arming it is refused outright; the router itself stays because manual_send (instrument
+# validation) and reconcile (position flattening) share its machinery.
+AUTOMATIC_DISPATCH_DISABLED = (
+    "Automatic dispatch is disabled: POST /api/copying enabled=true (DashboardController.set_copying) "
+    "can no longer arm the capture router, so captured signals are never sent on arrival. Trades are "
+    "sent individually from the Verified trades page (POST /api/trades/send) after the source's copy "
+    "control is switched on. Disabling (enabled=false) still works."
+)
+
 
 class DashboardController:
     def __init__(
@@ -205,27 +216,17 @@ class DashboardController:
             return self.status()
 
     def set_copying(self, enabled):
+        """Disarm only. Arming automatic dispatch is refused unconditionally: no route, connection
+        or verification state makes it acceptable, because the owner's rule is that nothing reaches
+        the broker without a deliberate per-trade send."""
         with self.lifecycle, self.lock, self.native.lock:
             if not isinstance(enabled, bool):
                 raise ValueError("Enabled must be a boolean")
-            route = self.native.route
-            if enabled and self.signal_copy.armed:
-                raise ValueError('Turn signal copying off before enabling native copying')
-            if enabled and not (
-                self.running
-                and self.api
-                and route
-                and self.native.demo_verified
-                and route.destination_account == self.selected
-            ):
-                raise ValueError("Configure a source route and connect the demo destination first")
-            self.native.armed = enabled
-            self.native.armed_at = datetime.now(UTC) if enabled else None
-            self.connection_message = (
-                "Connected. Copying enabled for the configured demo route."
-                if enabled
-                else "Connected. Copying is disabled."
-            )
+            if enabled:
+                raise ValueError(AUTOMATIC_DISPATCH_DISABLED)
+            self.native.armed = False
+            self.native.armed_at = None
+            self.connection_message = "Connected. Copying is disabled."
             return self.status()
 
     def copy_settings(self):
@@ -367,10 +368,14 @@ class DashboardController:
             return result
 
     def receive_native(self, payload, *, capture_generation=None):
+        """Record an arriving event as a candidate. The broker session is deliberately withheld
+        from the router here: with no api the router cannot dispatch, so an arriving event can
+        never reach the broker even if the armed flag were somehow set. Sends happen only through
+        send_trade."""
         with self.lock:
             if not self.running or (capture_generation is not None and capture_generation != self.capture_generation):
                 raise ValueError("Capture is stopped")
-            return self.native.receive(payload, self.api, self.selected)
+            return self.native.receive(payload, None, self.selected)
 
     def refresh_session(self):
         """Explicit button action: log in again on the selected account's session."""

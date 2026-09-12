@@ -1,3 +1,39 @@
+# Verified trades, Paper trades and copy controls (1.0.0)
+
+The sidebar adds **Verified trades** and **Paper trades**. Verified trades lists every
+trade the copier has handled for the selected account, with the broker's own read-back
+as the only proof of arrival: a row is styled as verified only in the states
+`verified_open` and `verified_closed`, which require an open-positions or
+closed-history read that returned the exact position id, symbol and side and carried
+AquaFunded's own open time. A send response alone is `sent_unconfirmed`. Local-clock
+columns (Sent, Confirmed, PAMM) and the broker-clock column (Aqua open time) are
+labelled and never merged. Every failed write shows its reason and origin. Paper
+trades lists requests composed in paper mode; none reached a broker and none can be
+verified, so they are kept off the verified ledger.
+
+**Copy controls** sit above the verified ledger: switches for the P01, X17 and MANUAL
+sources and one Paper/Live master. The default, and the state a missing
+`data/dashboard/copy-controls.json` resolves to, is paper with every source off.
+Enabling a source only makes its captured trades eligible; nothing is sent
+automatically. Each candidate row has its own Send control with lot size as the only
+editable field; a trade is sent at most once in either mode. Switching to Live needs a
+second confirming click, and a live send also requires `MTR_ENABLE_WRITES=true` and
+the connected destination account. See [verified trades](VERIFIED_TRADES.md) for the
+predicate, every state, and the known limitations.
+
+## Push-only shell
+
+The shell no longer polls its own API. One authenticated `GET /api/stream` carries
+status, the legacy and native feeds, mappings, broker profiles, copy controls,
+verified trades and paper sends; the server resends a section only when its content
+changes and sends a heartbeat comment otherwise. Missing heartbeats abort the
+connection after 25 seconds and reconnection backs off from one to ten seconds; a
+reconnect receives a fresh snapshot. The only timer left in the shell refreshes broker
+orders and positions, which live upstream and cannot be pushed: every five seconds,
+only while connected and while at least one order or position is outstanding, plus an
+explicit refresh on opening the Orders page. Statements below about 1.5-second or
+five-second dashboard polling describe earlier releases.
+
 # Closed trades
 
 Orders includes a Closed trades tab. Connect an account, choose inclusive local
@@ -18,8 +54,8 @@ outcomes are not labeled as source strategy outcomes.
 
 # v3 dashboard additions
 
-The **Orders** sidebar page shows pending orders and open positions, with five-second
-refresh while visible. The bridge page has a separate native Quantower feed and
+The **Orders** sidebar page shows pending orders and open positions; as of 1.0.0 they
+refresh every five seconds only while connected with work outstanding (see above). The bridge page has a separate native Quantower feed and
 copying control. See [capture setup](QUANTOWER_CAPTURE.md); the shadow-only statements
 below describe the legacy `/events` and CSV observation paths.
 
@@ -84,10 +120,11 @@ This dashboard does not fan out a source order to multiple accounts.
 - **Account selector:** requires capture stopped before switching. Each account has
   a separate persistent journal. A configured account is not labeled verified until login.
 
-The incoming table refreshes every 1.5 seconds and shows the latest 200 records from
-the selected journal. Hover over an event to see its source label and hold reason.
-This is local polling, not a claimed broker WebSocket integration. Source timestamps
-are preserved; bridge receipt timestamps are UTC. Receipt is not broker arrival.
+The incoming table shows the latest 200 records from the selected journal; as of
+1.0.0 it is pushed on the dashboard stream rather than polled every 1.5 seconds. Hover
+over an event to see its source label and hold reason. This is a local push stream,
+not a claimed broker WebSocket integration. Source timestamps are preserved; bridge
+receipt timestamps are UTC. Receipt is not broker arrival.
 
 ## Feed semantics
 

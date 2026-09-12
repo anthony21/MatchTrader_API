@@ -1,10 +1,11 @@
 """Persisted copy controls: one Paper/Live master switch plus a per-source enable.
 
 The default is the safe state - paper mode with every source off - and it is what a
-missing or unreadable file resolves to. Enabling a source only makes that source's
-captured trades *eligible*, visible as candidates; it never sends anything. A trade
-reaches the broker solely through an explicit send action, and only while the master
-switch is on live. Paper records the exact broker request and sends nothing.
+missing file resolves to; an unreadable one raises rather than guessing at it. Enabling
+a source only makes that source's captured trades *eligible*, visible as candidates; it
+never sends anything. A trade reaches the broker solely through an explicit send action,
+and only while the master switch is on live. Paper records the exact broker request and
+sends nothing. Live never survives a restart: the mode is reset to paper on every load.
 """
 
 from pathlib import Path
@@ -36,7 +37,14 @@ class CopyControls(BaseModel):
 
 
 def load_controls(path: Path) -> CopyControls:
-    return CopyControls.model_validate_json(path.read_text()) if path.exists() else CopyControls()
+    """The controls as a process start sees them. Per-source switches persist as saved; the
+    master mode always comes back as paper, whatever the file says, so an unattended restart
+    can never resume live. Going live is a deliberate action taken in the running session,
+    exactly as signal copying restarts disarmed."""
+    if not path.exists():
+        return CopyControls()
+    saved = CopyControls.model_validate_json(path.read_text())
+    return saved.model_copy(update={"mode": "paper"})
 
 
 def save_controls(path: Path, value: CopyControls):

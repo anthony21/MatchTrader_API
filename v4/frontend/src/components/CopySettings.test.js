@@ -18,7 +18,11 @@ test('loads persisted route and saves P01 settings without enabling copying', as
   await flushPromises()
   expect(request).toHaveBeenLastCalledWith('copy-settings', { route: saved.route, csv_limit: 1000 })
   expect(wrapper.text()).toContain('Settings saved')
+  expect(wrapper.text()).toContain('Nothing is sent automatically')
   expect(wrapper.emitted('saved')).toHaveLength(1)
+  // Saving a route is not enabling copying, and the page no longer points at a legacy toggle.
+  expect(request).not.toHaveBeenCalledWith('copying', expect.anything())
+  expect(wrapper.text()).not.toContain('Allow API trading')
   await wrapper.setProps({ state: { copying: true, accounts: [] } })
-  expect(wrapper.find('fieldset').element.disabled).toBe(true)
+  expect(wrapper.find('fieldset').element.disabled).toBe(false)
 })

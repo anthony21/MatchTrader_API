@@ -149,29 +149,35 @@ def test_bounded_inflight_and_stop_recheck_while_broker_worker_blocked(receiver,
         release.set()
 
 
-def test_lost_ack_replay_never_repeats_a_write(receiver, event, route, broker):
+def test_arrival_over_websocket_never_writes_even_with_the_flag_forced_and_replay_stays_duplicate(receiver, event, route, broker):
+    """Formerly the armed path: a forced armed flag plus a verified route made the first delivery a
+    broker write. Automatic dispatch is closed at the ingestion choke point, so the same state now
+    records a candidate and nothing more; a lost-ACK replay is still recognised as a duplicate."""
     controller = receiver.controller
     controller.start('123')
     route = route.model_copy(update={'destination_account': '123'})
     controller.native.route = route
-    controller.native.armed = controller.native.demo_verified = True
+    controller.native.armed = controller.native.demo_verified = True  # forced: no route can set it
     broker.close = lambda: None
     controller.api = broker
     with client(receiver) as ws:
-        greet(ws)
+        assert greet(ws)['copying_armed'] is True  # the sender is told the flag, and it still means nothing
         ws.send(envelope(event))
         ack = json.loads(ws.recv(timeout=3))
-        assert ack['result']['status'] == 'accepted'
-        assert len(broker.calls) == 1
-        # The sender can replay even when its own durable ACK log was lost.
+        assert ack['result']['status'] == 'held' and ack['result']['broker_order_id'] == ''
+        assert broker.calls == []
+        # The sender can replay even when its own durable ACK log was lost: a duplicate, no write.
         ws.send(envelope(event))
         replay = json.loads(ws.recv(timeout=3))
-        assert replay['duplicate'] and replay['result']['broker_order_id'] == 'aqua1'
-        assert len(broker.calls) == 1
-        # Observational fills cannot trigger another create.
+        assert replay['duplicate'] and replay['result']['broker_order_id'] == ''
+        assert broker.calls == []
+        # Observational fills are captured only.
         ws.send(envelope(event, event_id='fill', kind='FILL', action='OBSERVE', execution_id='fill1', fill_effect='OPEN'))
         assert json.loads(ws.recv(timeout=3))['result']['status'] == 'captured'
-        assert len(broker.calls) == 1
+        assert broker.calls == []
+    store = controller.native_store
+    assert store.db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0] == 0
+    assert all(row['state'] == 'observed' for row in store.db.execute('SELECT state FROM trades'))
 
 
 def test_socket_disconnect_during_processing_reconnects_to_same_outcome(receiver, event, monkeypatch):

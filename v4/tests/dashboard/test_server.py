@@ -6,6 +6,7 @@ import pytest
 
 from matchtrader.dashboard.controller import DashboardController
 from matchtrader.dashboard.server import DashboardHTTPServer, Handler
+from matchtrader.version import VERSION
 
 
 class MemorySocket:
@@ -91,7 +92,7 @@ def test_mapping_endpoint_is_authenticated_and_account_scoped(server):
     assert status == 200
     assert json.loads(body) == {'account_id': '123', 'mappings': []}
     _, raw = call(server, '/api/status', headers={'X-Session-Token': 'test-session'})
-    assert json.loads(raw)['version'] == '0.9.1'
+    assert json.loads(raw)['version'] == VERSION
 
 
 def test_api_requires_session_and_can_start_stop(server):
@@ -638,6 +639,107 @@ def test_trade_send_endpoint_live_is_refused_without_a_write_enabled_connection(
     assert store.db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
     assert store.db.execute("SELECT COUNT(*) FROM paper_sends").fetchone()[0] == 0
     assert store.trade(trade_id)["state"] == "observed"
+
+
+def test_copying_endpoint_refuses_to_arm_and_still_disarms(server):
+    headers = {"X-Session-Token": "test-session"}
+    status, body = call(server, "/api/copying", "POST", {"enabled": True}, headers)
+    error = json.loads(body)["error"]
+    assert status == 400
+    assert "Automatic dispatch is disabled" in error and "/api/trades/send" in error and "Verified trades" in error
+    assert not server.controller.native.armed
+    status, body = call(server, "/api/copying", "POST", {"enabled": False}, headers)
+    assert status == 200 and json.loads(body)["copying"] is False and json.loads(body)["mode"] == "capture"
+    status, body = call(server, "/api/copying", "POST", {"enabled": "yes"}, headers)
+    assert status == 400 and "boolean" in json.loads(body)["error"]
+
+
+def test_nothing_reaches_the_broker_until_an_explicit_send_and_that_send_is_the_only_call(server):
+    """The owner's rule, end to end: all three sources on, mode live, signals arriving through the
+    authenticated capture endpoint exactly as Quantower delivers them. No broker call happens
+    until POST /api/trades/send, and that send is the one call."""
+    from matchtrader.models.instrument import Instrument
+    from matchtrader.models.operation import Operation
+
+    class Broker:
+        """Raises on any access until the owner's send is expected; then serves exactly the
+        preflight read and the one write, counting both."""
+        connection = SimpleNamespace(session_expires_at=None, account_id="123")
+
+        def __init__(self):
+            self.expecting_send = False
+            self.reads, self.writes = [], []
+
+        def close(self):
+            pass
+
+        def __getattr__(self, name):
+            if not self.expecting_send:
+                raise AssertionError(f"Broker method {name} reached without an explicit send")
+            if name == "instruments":
+                def instruments():
+                    self.reads.append(name)
+                    return [Instrument(symbol="EURUSD", volumeMin=".01", volumeMax="50", volumeStep=".01")]
+                return instruments
+            if name == "create_pending_order":
+                def create_pending_order(**kwargs):
+                    self.writes.append((name, kwargs))
+                    return Operation(orderId="aqua-1")
+                return create_pending_order
+            raise AssertionError(f"Unexpected broker method {name} during the send")
+
+    controller = server.controller
+    controller.settings = controller.settings.model_copy(update={"enable_writes": True})
+    broker = Broker()
+    controller.api = broker
+    controller.connection = "connected"
+    controller.native.demo_verified = True
+    session = {"X-Session-Token": "test-session"}
+    sender = {"Authorization": "Bearer " + server.bridge_token}
+    everything = {"mode": "live", "sources": {"P01": True, "X17": True, "MANUAL": True}}
+    status, body = call(server, "/api/copy-controls", "POST", everything, session)
+    assert status == 200 and json.loads(body) == everything
+    status, body = call(server, "/api/copying", "POST", {"enabled": True}, session)
+    assert status == 400 and "Automatic dispatch is disabled" in json.loads(body)["error"]
+    assert call(server, "/api/start", "POST", {"account_id": "123"}, session)[0] == 200
+    try:
+        trade_ids = {}
+        for source in ("P01", "X17", "MANUAL"):
+            event = ledger_signal(f"arrive-{source}", f"order-{source}", source).model_dump(mode="json")
+            status, body = call(server, "/capture/events", "POST", event, sender)
+            result = json.loads(body)
+            assert status == 202 and result["status"] == "held" and result["broker_order_id"] == ""
+            trade_ids[source] = result["trade_id"]
+        store = controller.native_store
+        assert store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+        assert store.db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 0
+        assert store.db.execute("SELECT COUNT(*) FROM paper_sends").fetchone()[0] == 0
+        assert broker.reads == [] and broker.writes == []
+        rows = Handler.dashboard_sections(controller, [])["verified_trades"]["rows"]
+        assert {r["trade_id"]: (r["state"], r["source_enabled"]) for r in rows} == dict.fromkeys(
+            trade_ids.values(), ("candidate", True))
+        # The deliberate action, for one specific trade. Only now may the broker be touched.
+        broker.expecting_send = True
+        status, body = call(server, "/api/trades/send", "POST", {"trade_id": trade_ids["X17"], "volume": "0.02"}, session)
+        result = json.loads(body)
+        assert status == 200 and result["mode"] == "live" and result["status"] == "accepted"
+        assert result["broker_order_id"] == "aqua-1"
+        broker.expecting_send = False
+        assert broker.reads == ["instruments"]
+        assert [name for name, _ in broker.writes] == ["create_pending_order"]
+        assert broker.writes[0][1]["instrument"] == "EURUSD" and str(broker.writes[0][1]["volume"]) == "0.02"
+        assert store.db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+        assert store.trade(trade_ids["X17"])["state"] == "pending"
+        for other in ("P01", "MANUAL"):
+            assert store.trade(trade_ids[other])["state"] == "observed"
+        # A second arrival after the send is still only a candidate.
+        status, body = call(server, "/capture/events", "POST",
+                            ledger_signal("arrive-again", "order-again", "X17").model_dump(mode="json"), sender)
+        assert status == 202 and json.loads(body)["status"] == "held"
+        assert len(broker.writes) == 1
+    finally:
+        controller.stop()
+        controller.api = None
 
 
 def test_ledger_sections_are_digest_stable_with_real_evidence_on_record(server):

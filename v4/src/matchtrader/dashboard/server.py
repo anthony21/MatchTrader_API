@@ -468,7 +468,12 @@ class Handler(BaseHTTPRequestHandler):
                     controller.native_store.notify_stream()
                     return self.reply(400, {"error": str(exc)})
             elif self.path == "/api/copying":
-                result = controller.set_copying(payload.get("enabled"))
+                # Arming is refused by design; the refusal names the rule and the path that does
+                # send (the Verified trades page), so the caller is never left with a bare failure.
+                try:
+                    result = controller.set_copying(payload.get("enabled"))
+                except ValueError as exc:
+                    return self.reply(400, {"error": str(exc)})
             elif self.path == '/api/signal-copy-settings':
                 result = controller.configure_signals(payload)
             elif self.path == '/api/signal-copying':

@@ -58,14 +58,20 @@ test('unknown attribution is retained and kind/search filters work', () => {
   expect(host.textContent).toContain('No matching events')
 })
 
-test('only explicit opening evidence contributes to the metric and copy preflight stays enforced', () => {
+test('only explicit opening evidence contributes to the metric and no control can enable automatic dispatch', () => {
   const onToggle = vi.fn()
   render({ events: [event('1', 'a', 'R01', 'confirmed'), event('2', 'b', 'X17')], onToggle })
   expect(host.querySelectorAll('.incoming-metrics strong')[2].textContent).toBe('1')
-  expect(host.querySelector('button').disabled).toBe(true)
-  click(host.querySelector('button')); expect(onToggle).not.toHaveBeenCalled()
-  act(() => root.render(<IncomingTrades state={{ copying: true }} onToggle={onToggle} />))
-  click(host.querySelector('button')); expect(onToggle).toHaveBeenCalledOnce()
+  // The legacy Allow/Stop API trading button is gone: the page offers no way to arm dispatch,
+  // even when the state claims the most permissive conditions it ever required.
+  const armingButton = () => [...host.querySelectorAll('button')].find(b => /API trading/i.test(b.textContent))
+  expect(armingButton()).toBeUndefined()
+  act(() => root.render(<IncomingTrades state={{ copying: true, route_configured: true, running: true, connection: 'connected' }} onToggle={onToggle} />))
+  expect(armingButton()).toBeUndefined()
+  host.querySelectorAll('button').forEach(click)
+  expect(onToggle).not.toHaveBeenCalled()
+  expect(host.textContent).toContain('Automatic dispatch off')
+  expect(host.textContent).toContain('Verified trades page')
   expect(host.textContent).toContain('Waiting for new events')
 })
 

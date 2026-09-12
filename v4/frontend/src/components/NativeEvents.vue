@@ -5,13 +5,12 @@ import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import IncomingTrades from '../react/IncomingTrades.jsx'
 const props = defineProps({ events: Array, legacyEvents: Array, state: Object, busy: Boolean, streamStatus: String })
-const emit = defineEmits(['toggle'])
 const host = ref(null)
 let root
 function render() {
   if (root) flushSync(() => root.render(createElement(IncomingTrades, {
     events: [...(props.events ?? [])], legacyEvents: [...(props.legacyEvents ?? [])],
-    state: { ...props.state }, streamStatus: props.streamStatus, busy: props.busy, onToggle: () => emit('toggle'),
+    state: { ...props.state }, streamStatus: props.streamStatus, busy: props.busy,
   })))
 }
 onMounted(() => { root = createRoot(host.value); render() })

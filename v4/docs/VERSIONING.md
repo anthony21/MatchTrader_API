@@ -1,15 +1,26 @@
-# Current release: 0.9.1 (workspace v4)
+# Current release: 1.0.0 (workspace v4)
 
 Use semantic `major.minor.patch` releases from this point onward. Breaking contracts
 increment major; compatible features increment minor; compatible fixes increment patch.
 Workspace folders are independent of release versions: current development stays in v4.
-Event and journal contracts have independent schema versions. See
-[trade mapping 0.2.0](TRADE_MAPPING.md) for event schema 1.1.0 and mapping schema 1.0.0.
+Event and journal contracts have independent schema versions. Event schema is 1.1.0
+(see [trade mapping 0.2.0](TRADE_MAPPING.md)); mapping journal schema is 1.1.0 as of
+release 1.0.0 (see [verified trades](VERIFIED_TRADES.md)).
 Python/frontend package versions and `matchtrader.version.VERSION` must agree.
 
 See [the changelog](CHANGELOG.md) for readable release summaries and the Git tag
 policy. The first tagged release is 0.6.0; earlier entries below are local
 development milestones included in that release, not separately published tags.
+
+## 1.0.0 - verified-trade ledger and copy controls
+
+Broker read-back as the only proof of arrival, with verified open / verified closed
+the only verified states; investigable reasons for every failed write; Paper/Live
+copy controls with explicit, once-only sends; Verified trades and Paper trades pages;
+push-only shell. Mapping journal schema 1.0.0 to 1.1.0, migrated in place and
+forward-only: older code cannot open a migrated journal, so back up
+data/dashboard/quantower/capture.sqlite3 before the first run. That incompatibility
+is why the major version increments. Event schema remains 1.1.0. See VERIFIED_TRADES.md.
 
 ## 0.9.1 - platform-first login and token reuse
 
