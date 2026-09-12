@@ -29,6 +29,14 @@ function pammText(p) {
   const ack = p.upstream_status == null || p.upstream_status === '' ? 'ack not received' : `TradingBox ${p.upstream_status}`
   return `Published ${localTime(p.published_at)} · ${ack}`
 }
+// A signal-driven cancel or close applied to this trade (or refused), with the broker's answer.
+const UNWIND_VERB = { CANCEL: 'Cancel', CLOSE: 'Close' }
+const UNWIND_OUTCOME = { accepted: 'broker accepted', uncertain: 'outcome unconfirmed', held: 'not sent', dispatching: 'in flight' }
+function unwindText(u) {
+  const verb = UNWIND_VERB[u.action] || u.action || 'Unwind'
+  const outcome = UNWIND_OUTCOME[u.outcome] || u.outcome || 'outcome not recorded'
+  return `${verb} on signal · ${outcome}`
+}
 </script>
 
 <template>
@@ -59,7 +67,8 @@ function pammText(p) {
             <td class="time broker-time">{{ localTime(row.timestamps?.broker_open, row.timestamps?.broker_open_millis) }}</td>
             <td class="pamm">{{ pammText(row.pamm) }}</td>
             <td class="state-cell"><span class="badge state" :class="VERIFIED.has(row.state) ? 'verified' : `plain ${row.state}`">{{ stateLabel(row.state) }}</span>
-              <span v-if="row.state === 'read_back_no_time'" class="subtext no-time">{{ NO_TIME }}</span></td>
+              <span v-if="row.state === 'read_back_no_time'" class="subtext no-time">{{ NO_TIME }}</span>
+              <span v-if="row.unwind" class="subtext unwind" :class="`unwind-${row.unwind.outcome || 'unrecorded'}`">{{ unwindText(row.unwind) }} · {{ localTime(row.unwind.at) }}</span></td>
             <td class="reason">
               <template v-if="row.cancellation">{{ reasonText(row.cancellation) }}
                 <span class="badge origin" :class="`origin-${row.cancellation.origin || 'unrecorded'}`">{{ row.cancellation.origin || 'origin not recorded' }}</span></template>
@@ -76,6 +85,11 @@ function pammText(p) {
             <template v-if="row.cancellation">
               <p>{{ row.cancellation.origin || 'origin not recorded' }} · {{ row.cancellation.outcome || 'outcome not recorded' }} · code {{ row.cancellation.code ?? '—' }} · {{ localTime(row.cancellation.at) }}</p>
               <pre v-if="row.cancellation.evidence != null">{{ JSON.stringify(row.cancellation.evidence, null, 2) }}</pre>
+            </template>
+            <template v-if="row.unwind">
+              <p class="unwind-detail">{{ unwindText(row.unwind) }} · signal {{ row.unwind.request_id || '—' }} · {{ row.unwind.origin || 'origin not recorded' }} · {{ localTime(row.unwind.at) }}</p>
+              <p v-if="row.unwind.summary">{{ row.unwind.summary }}</p>
+              <pre v-if="row.unwind.request">{{ JSON.stringify(row.unwind.request, null, 2) }}</pre>
             </template>
           </details></td></tr>
         </template>
@@ -100,6 +114,10 @@ function pammText(p) {
 .badge.mode-paper{text-transform:none}
 .reason,.pamm,.state-cell{white-space:normal;max-width:280px}
 .no-time{white-space:normal;max-width:220px}
+.unwind{display:block;white-space:normal;max-width:220px;margin-top:4px;font-weight:600}
+.unwind-accepted{color:#1f6a4c}
+.unwind-uncertain,.unwind-dispatching{color:#936b29}
+.unwind-held{color:#9b2226}
 .evidence-row td{padding:0 17px 12px;white-space:normal;border-bottom:1px solid #edf1f6}
 .evidence-row details{font-size:12px;color:#5b6b82}
 .evidence-row summary{cursor:pointer;font-size:11px;color:#6a7e94}

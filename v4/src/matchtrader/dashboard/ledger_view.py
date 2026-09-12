@@ -9,6 +9,12 @@ evidence hash identically.
 A paper-sent trade is reported with state "paper_sent" and verified=False: the paper path
 writes no broker evidence, so classify() would call it a candidate, but it has been
 consumed and belongs on the paper page - it must never read as verified or as sendable.
+
+A signal-driven cancel or close (capture/unwind.py) is carried in the row's `unwind` field:
+the action, its outcome, when it was recorded and the reason's summary and origin. When the
+broker accepted the cancel of a pending order that never became a position, the row's state
+is "cancelled" so the page stops offering a send; a close never changes the classifier's
+state, because only a broker read-back may say a position is closed.
 """
 
 import json
@@ -18,6 +24,30 @@ from ..capture.verified import classify
 
 SOURCE_ENDED = frozenset({"Cancelled", "Refused", "Removed"})
 PAPER_SENT = "paper_sent"
+CANCELLED = "cancelled"
+UNWIND_ACTIONS = frozenset({"CANCEL", "CLOSE"})
+
+
+def _unwind(snapshot):
+    """The latest signal-driven cancel or close recorded for this trade (capture/unwind.py), or a
+    refusal of one. `actions` is ordered newest first; the attempt's outcome comes from
+    action_history and any refusal from outcome_reasons keyed to the same action."""
+    actions = [a for a in snapshot.get("actions") or [] if a.get("action") in UNWIND_ACTIONS]
+    reasons = [r for r in snapshot.get("outcome_reasons") or []
+               if str(r.get("action_key", "")).split(":", 1)[0] in UNWIND_ACTIONS]
+    if not actions and not reasons:
+        return None
+    if actions:
+        latest = actions[0]
+        reason = next((r for r in reversed(reasons) if r.get("action_key") == latest.get("action_key")), None)
+        return {"action": latest["action"], "outcome": latest.get("outcome"), "at": latest.get("updated_at"),
+                "request_id": latest.get("request_id"), "request": latest.get("request"),
+                "summary": reason.get("summary") if reason else None,
+                "origin": reason.get("origin") if reason else None}
+    refusal = reasons[-1]
+    return {"action": refusal["action_key"].split(":", 1)[0], "outcome": refusal.get("outcome"),
+            "at": refusal.get("at"), "request_id": refusal["action_key"].split(":")[-1], "request": None,
+            "summary": refusal.get("summary"), "origin": refusal.get("origin")}
 
 
 def _ids(links, side, kind):
@@ -48,6 +78,14 @@ def verified_row(snapshot, controls, publication, paper_sent=False):
     if paper_sent and not verified:
         state = PAPER_SENT
         reasons.insert(0, "Sent in paper mode: the exact request was recorded and nothing reached the broker.")
+    unwound = _unwind(snapshot)
+    if (unwound and unwound["action"] == "CANCEL" and unwound["outcome"] == "accepted"
+            and snapshot.get("state") == "resolved" and not _ids(links, "destination", "position")):
+        # The broker confirmed the cancel of the pending order and no position ever existed: this
+        # row is cancelled, not a candidate, and must not offer a send.
+        state = CANCELLED
+        reasons.insert(0, "The broker accepted the cancel of this pending order on the source's signal; "
+                          "no position was opened.")
     return {
         "trade_id": snapshot["trade_id"],
         "state": state,
@@ -71,6 +109,7 @@ def verified_row(snapshot, controls, publication, paper_sent=False):
         "pamm": ({"published": is_published(publication), "published_at": publication.get("published_at"),
                   "upstream_status": publication.get("upstream_status")} if publication else None),
         "cancellation": _cancellation(snapshot),
+        "unwind": unwound,
         "mapping_status": snapshot.get("mapping_status"),
         "reasons": reasons,
     }

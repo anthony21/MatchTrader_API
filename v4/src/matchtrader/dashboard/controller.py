@@ -91,7 +91,9 @@ class DashboardController:
         self.relay_logs = RelayLogStore(data_dir / 'relay')
         self.logging_events = LoggingStore(data_dir / 'logging')
         # Signal copying starts disarmed on every process start; only an explicit action arms it.
-        self.signal_copy = SignalCopy(data_dir / 'relay')
+        # A cancel/closed signal unwinds against the capture ledger (the trades the owner sent)
+        # regardless of that switch or the copy controls: see capture/unwind.py.
+        self.signal_copy = SignalCopy(data_dir / 'relay', ledger=self.native_store)
         self.p01_log = P01Log(p01_log_path or os.environ.get('MTR_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
         # Copy controls default to the safe state (paper, every source off) and are the only
         # gate on manual dispatch; PAMM publishing reads the forwarder lazily because the

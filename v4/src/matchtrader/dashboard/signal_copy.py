@@ -1,4 +1,12 @@
-"""Explicit, local-only signal copying; durable identities prevent replayed orders."""
+"""Explicit, local-only signal copying; durable identities prevent replayed orders.
+
+Opening copies is gated (armed, configured, fresh). Unwinding is not: a `cancelled`, `cancel`
+or `closed` signal is handed to capture.unwind against the ledger of trades the owner sent, and
+acts whatever the toggles say, because it only ever removes exposure. The one legacy case - a
+pending order this module itself dispatched while armed - is cancelled by prepare_cancel under
+the same rule: its checks that the order is still resting and matches the stored copy remain,
+its arming and freshness gates do not.
+"""
 import hashlib
 import json
 import sqlite3
@@ -9,8 +17,9 @@ from threading import RLock
 from types import SimpleNamespace
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..capture import unwind
 from ..capture.router import CaptureRouter
 from .copy_settings import save_settings
 
@@ -33,8 +42,16 @@ class SignalSettings(BaseModel):
     exclusive_destination: Literal[True]
     p01_log_enabled: bool = False
     additional_sources: list[Literal['chain', 'panel']] = Field(default_factory=list)
-    cancel_pending: bool = False
     x17_only: bool = False
+
+    @model_validator(mode='before')
+    @classmethod
+    def retire_cancel_pending(cls, value):
+        # Cancelling a linked pending order is no longer optional: a cancel or closed signal always
+        # acts on exposure we created. Saved files from before this rule still load; the key is dropped.
+        if isinstance(value, dict) and 'cancel_pending' in value:
+            value = {k: v for k, v in value.items() if k != 'cancel_pending'}
+        return value
 
 
 class Signal(BaseModel):
@@ -67,11 +84,13 @@ class Signal(BaseModel):
 
 
 class SignalCopy:
-    def __init__(self, directory):
+    def __init__(self, directory, ledger=None):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / 'signal-copy-settings.json'
         self.config = SignalSettings.model_validate_json(self.path.read_text()) if self.path.exists() else None
+        # The CaptureStore holding the trades the owner sent; cancel/closed signals unwind against it.
+        self.ledger = ledger
         self.lock = RLock()
         self.armed = False
         self.armed_at = None
@@ -166,33 +185,70 @@ class SignalCopy:
             self.db.execute('INSERT INTO signals(id,client_id,machine,source,label,kind,emitted,received,digest,payload,decision,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                             (key, signal.clientEventId, signal.machineId, signal.source, signal.label, signal.kind,
                              signal.timestampUtc.isoformat(), now.isoformat(), digest, serialized, 'captured', 'Local logging; no copy attempted'))
-        if signal.kind == 'intent' or (signal.kind in {'cancelled', 'cancel'} and self.config and self.config.cancel_pending):
-            try:
-                if signal.kind == 'intent':
-                    kwargs, method = self.prepare(signal, closed, api, destination, verified, now, raw=raw)
-                else:
-                    kwargs, method = self.prepare_cancel(signal, raw, api, destination, verified, now)
-                # Commit the attempt before invoking a broker write. Uncertain outcomes are never retried.
-                with self.db:
-                    self.db.execute("UPDATE signals SET decision='dispatching',destination=?,request=? WHERE id=?", (destination, json.dumps(kwargs, default=str), key))
-                try:
-                    response = method(**kwargs)
-                    response_data = response.model_dump(mode='json')
-                    accepted = response.status in {'', None, 'OK'} and (bool(response.orderId or response.positionId) if signal.kind == 'intent' else response.status == 'OK')
-                    decision = 'accepted' if accepted else 'uncertain'
-                    reason = 'MatchTrader accepted the configured copy request' if accepted else 'Unrecognized write response; no automatic retry'
-                except Exception as error:
-                    response_data = {'error_type': type(error).__name__}
-                    decision, reason = 'uncertain', 'Copy write outcome unknown; no automatic retry'
-                with self.db:
-                    self.db.execute('UPDATE signals SET decision=?,reason=?,response=? WHERE id=?', (decision, reason, json.dumps(response_data), key))
-            except (ValueError, TypeError) as error:
-                with self.db:
-                    self.db.execute("UPDATE signals SET decision='held',reason=? WHERE id=?", (str(error), key))
-            except Exception:
-                with self.db:
-                    self.db.execute("UPDATE signals SET decision=CASE WHEN decision='dispatching' THEN 'uncertain' ELSE 'held' END,reason='Processing interrupted; no automatic retry' WHERE id=?", (key,))
+        if signal.kind == 'intent':
+            self._dispatch(key, signal, destination,
+                           lambda: self.prepare(signal, closed, api, destination, verified, now, raw=raw))
+        elif signal.kind in unwind.UNWIND_KINDS:
+            self._unwind(key, signal, raw, api, destination, verified)
         return self.result(self.db.execute('SELECT * FROM signals WHERE id=?', (key,)).fetchone())
+
+    def _dispatch(self, key, signal, destination, preparer):
+        try:
+            kwargs, method = preparer()
+            # Commit the attempt before invoking a broker write. Uncertain outcomes are never retried.
+            with self.db:
+                self.db.execute("UPDATE signals SET decision='dispatching',destination=?,request=? WHERE id=?", (destination, json.dumps(kwargs, default=str), key))
+            try:
+                response = method(**kwargs)
+                response_data = response.model_dump(mode='json')
+                accepted = response.status in {'', None, 'OK'} and (bool(response.orderId or response.positionId) if signal.kind == 'intent' else response.status == 'OK')
+                decision = 'accepted' if accepted else 'uncertain'
+                reason = 'MatchTrader accepted the configured copy request' if accepted else 'Unrecognized write response; no automatic retry'
+            except Exception as error:
+                response_data = {'error_type': type(error).__name__}
+                decision = 'uncertain'
+                reason = (f'Copy write outcome unconfirmed after {type(error).__name__}; broker state not verified, '
+                          f'no automatic retry (signal {signal.machineId}:{signal.clientEventId})')
+            with self.db:
+                self.db.execute('UPDATE signals SET decision=?,reason=?,response=? WHERE id=?', (decision, reason, json.dumps(response_data), key))
+        except (ValueError, TypeError) as error:
+            with self.db:
+                self.db.execute("UPDATE signals SET decision='held',reason=? WHERE id=?", (str(error), key))
+        except Exception as error:
+            with self.db:
+                self.db.execute("UPDATE signals SET decision=CASE WHEN decision='dispatching' THEN 'uncertain' ELSE 'held' END,reason=? WHERE id=?",
+                                (f'Processing interrupted by {type(error).__name__}; no automatic retry', key))
+
+    def _unwind(self, key, signal, raw, api, destination, verified):
+        """A cancel or closed signal acts on exposure we created, now, whatever the toggles say."""
+        verb = 'cancel' if signal.kind in unwind.CANCEL_KINDS else 'close'
+        outcome = None
+        if self.ledger is not None and signal.label:
+            try:
+                outcome = unwind.apply(self.ledger, signal, api, destination, verified)
+            except Exception as error:
+                outcome = {'decision': 'uncertain', 'request': None, 'response': None,
+                           'reason': (f'Unwind processing interrupted by {type(error).__name__}; completion is '
+                                      f'unconfirmed. Check the capture journal for lifecycle {signal.label!r} '
+                                      'and reconcile broker state before any retry')}
+        if outcome is not None:
+            with self.db:
+                self.db.execute('UPDATE signals SET decision=?,reason=?,destination=?,request=?,response=? WHERE id=?', (
+                    outcome['decision'], outcome['reason'], destination,
+                    json.dumps(outcome['request'], default=str) if outcome['request'] is not None else None,
+                    json.dumps(outcome['response'], default=str) if outcome['response'] is not None else None, key))
+            return
+        if signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
+            self._dispatch(key, signal, destination, lambda: self.prepare_cancel(signal, raw, api, destination, verified))
+            return
+        reason = (f'Signal carries no lifecycle label; nothing to {verb}' if not signal.label else
+                  f'No sent trade is linked to lifecycle {signal.label!r} from {signal.machineId}; nothing to {verb}')
+        with self.db:
+            self.db.execute("UPDATE signals SET decision='captured',reason=? WHERE id=?", (reason, key))
+
+    def legacy_copy(self, raw, destination):
+        """True when this module itself dispatched the intent of this lifecycle while armed."""
+        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination for r in self.related(raw))
 
     def check_route(self, signal, api, destination, verified, now):
         config = self.config
@@ -268,12 +324,16 @@ class SignalCopy:
             return kwargs, api.open_position
         return {**kwargs, 'type': order_type, 'price': signal.entry}, api.create_pending_order
 
-    def prepare_cancel(self, signal, raw, api, destination, verified, now):
-        self.check_route(signal, api, destination, verified, now)
+    def prepare_cancel(self, signal, raw, api, destination, verified):
+        """Cancel a pending order this module dispatched itself. Deliberately not gated by the arming
+        switch or signal freshness: the order exists at the broker, so a late or post-disarm cancel
+        still removes it. The connection and the exact-match checks remain."""
+        if not api or not verified:
+            raise ValueError('Connect the authenticated destination before cancelling its pending order')
         if not signal.label:
             raise ValueError('Cancellation requires the original label')
         related = self.related(raw)
-        if any(r['kind'] in {'cancelled', 'cancel'} and r['request'] and r['destination'] == destination for r in related):
+        if any(r['kind'] in unwind.CANCEL_KINDS and r['request'] and r['destination'] == destination for r in related):
             raise ValueError('Cancellation already attempted; no automatic retry')
         opens = [r for r in related if r['kind'] == 'intent' and r['request'] and r['destination'] == destination]
         if len(opens) != 1 or opens[0]['decision'] != 'accepted':
@@ -284,13 +344,7 @@ class SignalCopy:
         order_id = response.get('orderId')
         if not order_id or request.get('type') not in {'LIMIT', 'STOP'}:
             raise ValueError('The linked copy is not a pending order')
-        orders = [o for o in api.active_orders() if o.id == order_id]
-        if len(orders) != 1:
-            raise ValueError('Linked order is no longer pending; no position is closed')
-        order = orders[0]
-        if (order.symbol, order.side, order.type) != (request['instrument'], request['orderSide'], request['type']):
-            raise ValueError('Broker order does not match the stored copy')
-        return {'instrument': order.symbol, 'id': order.id, 'orderSide': order.side, 'type': order.type}, api.cancel_pending_order
+        return unwind.pending_order_request(api, order_id, request), api.cancel_pending_order
 
     def close(self):
         with self.lock:

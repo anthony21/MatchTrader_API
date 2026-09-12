@@ -103,10 +103,35 @@ def test_off_during_inflight_stops_new_requests_without_waiting(forwarder):
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize('url', ['http://tradingbox.pro/api/hcamm/events', 'https://evil.example/api/hcamm/events', 'https://tradingbox.pro/other', 'https://user:pass@tradingbox.pro/api/hcamm/events', URL + '?key=secret'])
+# The operator chooses where their own raw data goes, so the host is not restricted. The
+# transport is: http would put trade data in clear, and credentials in the URL would be
+# copied into the settings file and any log that echoes it.
+@pytest.mark.parametrize('url', [
+    'http://tradingbox.pro/api/hcamm/events',
+    'http://example.com/hook',
+    'ftp://example.com/hook',
+    'https:///api/hcamm/events',
+    'https://user:pass@example.com/hook',
+    'https://example.com/hook#fragment',
+    'https://example.com:abc/hook',
+    'https://example.com:0/hook',
+    'https://example.com:70000/hook',
+    'https://example.com/hook\r\nInjected:yes',
+])
 def test_invalid_destination(url):
     with pytest.raises(ValueError):
         validate_url(url)
+
+
+@pytest.mark.parametrize('url', [
+    URL,
+    'https://tradingbox.org/api/hcamm/events',
+    'https://example.com/hook',
+    'https://example.com:8443/deep/path',
+    URL + '?key=secret',
+])
+def test_any_https_destination_the_operator_names_is_accepted(url):
+    assert validate_url(url) == url
 
 
 @pytest.mark.parametrize('method', ['POST', 'GET', 'HEAD'])
@@ -118,7 +143,7 @@ def test_raw_http_transport_preserves_bytes_and_strips_hop_headers(monkeypatch, 
         def read(self, limit): return b'\x1f\x8bcompressed'
         def getheaders(self): return [('Location', 'https://other.example'), ('Set-Cookie', 'a=1'), ('Set-Cookie', 'b=2'), ('Connection', 'close')]
     class Connection:
-        def __init__(self, host, timeout): seen.append(('host', host))
+        def __init__(self, host, timeout, port=None): seen.append(('host', host, port))
         def putrequest(self, method, path, **kwargs): seen.append((method, path))
         def putheader(self, name, value): seen.append((name, value))
         def endheaders(self, body): seen.append(('body', body))
@@ -131,6 +156,8 @@ def test_raw_http_transport_preserves_bytes_and_strips_hop_headers(monkeypatch, 
     assert ('body', b'\x00original') in seen and ('X-HCAMM-Key', KEY) in seen
     assert ('Host', 'localhost') not in seen and ('x-private-hop', 'omit') not in seen
     assert len([h for h in headers if h[0] == 'Set-Cookie']) == 2
+    send_once('https://example.com:8443', [], b'')
+    assert ('host', 'example.com', 8443) in seen and ('POST', '/') in seen
 
 
 def test_live_requires_key_and_off_controls_are_not_persisted(tmp_path):

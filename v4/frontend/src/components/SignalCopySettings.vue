@@ -19,7 +19,6 @@ function selectX17P01() {
   config.value.source = 'chain'
   config.value.additional_sources = ['panel']
   config.value.p01_log_enabled = false
-  config.value.cancel_pending = true
   config.value.x17_only = true
   config.value.machine_id = props.state?.p01_log?.machine || config.value.machine_id
   rows.value.forEach(row => { row.order_type = 'ENTRY' })
@@ -59,8 +58,8 @@ async function save() {
         <button type="button" @click="selectX17P01">Use X17 + manual P01 at logged entry</button>
         <label class="check"><input type="checkbox" :checked="config.additional_sources?.includes('panel')" @change="config.additional_sources = $event.target.checked ? ['panel'] : []" />Also accept structured P01 panel signals</label>
         <label class="check"><input v-model="config.x17_only" type="checkbox" />Require X17 attribution for chain intents</label>
-        <label class="check"><input v-model="config.cancel_pending" type="checkbox" />Forward cancellation signals to linked pending orders</label>
-        <p>Intervals remain separate when tracking orders. A blank chart filter accepts all intervals; P01 panel signals use their own labels. Cancellation never closes filled positions.</p>
+        <p>Intervals remain separate when tracking orders. A blank chart filter accepts all intervals; P01 panel signals use their own labels.</p>
+        <p class="unwind-rule">A cancel or closed signal always acts on a trade you already sent: the resting order is cancelled or the open position closed at once, whatever these switches or the copy controls say. Cancellation never closes a filled position. Nothing is ever opened automatically.</p>
         <label class="check"><input v-model="config.p01_log_enabled" type="checkbox" @change="selectP01" />Copy P01 chart intents from the local log</label>
         <p v-if="config.p01_log_enabled">Start capture to read P01 chart intents. Copies keep the source Limit or Stop type and use your lot size.</p>
         <div class="settings-grid">

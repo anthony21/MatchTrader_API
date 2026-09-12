@@ -775,3 +775,46 @@ def test_ledger_sections_are_digest_stable_with_real_evidence_on_record(server):
     third = Handler.dashboard_sections(controller, [])
     for name in ("copy_controls", "paper_sends", "verified_trades", "mappings"):
         assert Handler.section_digest(name, first[name]) == Handler.section_digest(name, third[name]), name
+
+
+def test_a_signal_reaches_the_raw_feed_the_moment_it_arrives(server):
+    """The relay archives these bytes to disk and the collector ships them later. The Raw Data
+    page must not wait for that round trip for an event the receiver already has in hand."""
+    from tests.dashboard.test_signal_copy import packet
+
+    raw_log = server.controller.native_store.raw_log
+    before = len(raw_log.entries)
+    headers = {'Authorization': 'Bearer ' + server.bridge_token}
+    assert call(server, '/capture/signals', 'POST', [packet(clientEventId='live-1')], headers)[0] == 202
+
+    added = [row for row, _ in list(raw_log.entries)[before:]]
+    assert [row['direction'] for row in added] == ['in', 'out']
+    assert {row['transport'] for row in added} == {'x17-signal'}
+    assert 'live-1' in added[0]['raw']
+    # The reply is recorded too, so the page shows what the receiver decided, not just what arrived.
+    assert 'held' in added[1]['raw'] or 'captured' in added[1]['raw']
+    # Nothing was read from the relay archive to produce either entry.
+    assert server.controller.relay_logs.feed(0)['records'] == []
+
+
+def test_a_rejected_signal_never_reaches_the_raw_feed(server):
+    from tests.dashboard.test_signal_copy import packet
+
+    raw_log = server.controller.native_store.raw_log
+    before = len(raw_log.entries)
+    assert call(server, '/capture/signals', 'POST', [packet(clientEventId='unauth')])[0] == 401
+    assert len(raw_log.entries) == before
+
+
+@pytest.mark.parametrize('failure,status', [(ValueError, 400), (TimeoutError, 408), (RuntimeError, 500)])
+def test_live_signal_error_response_is_also_recorded(server, monkeypatch, failure, status):
+    def fail(_):
+        raise failure('private receiver detail')
+    monkeypatch.setattr(server.controller, 'receive_signals', fail)
+    raw = server.controller.native_store.raw_log
+    before = len(raw.entries)
+    code, body = call(server, '/capture/signals', 'POST', [], {'Authorization': 'Bearer ' + server.bridge_token})
+    added = [row for row, _ in list(raw.entries)[before:]]
+    assert code == status and [row['direction'] for row in added] == ['in', 'out']
+    assert json.loads(added[-1]['raw']) == json.loads(body)
+    assert 'private receiver detail' not in added[-1]['raw']

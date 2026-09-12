@@ -302,6 +302,27 @@ test('Raw events receives live JSON without a second persistent log', async ({ p
   await page.getByRole('button', { name: 'Stop & disconnect' }).click()
 })
 
+test('X17 signals and receiver decisions appear live in Raw Data without archive reads', async ({ page, request }) => {
+  await page.route('**/api/relay/**', route => route.abort())
+  await page.goto(`${url}/?page=raw`)
+  const eventId = 'live-x17-browser'
+  const response = await request.post(`${url}/capture/signals`, {
+    headers: { Authorization: 'Bearer stream-test-token-with-32-characters' },
+    data: [{ clientEventId: eventId, machineId: 'browser', source: 'chain', kind: 'intent',
+      timestampUtc: new Date().toISOString(), symbol: 'EURUSD', side: 'long', label: 'browser-lifecycle',
+      detail: 'x17-spine', entry: 1.1, stopLoss: 1.09, takeProfit: 1.12 }],
+  })
+  expect(response.status()).toBe(202)
+  await page.getByLabel('Search raw JSON').fill(eventId)
+  await expect(page.locator('.raw-message')).toHaveCount(2)
+  for (const summary of await page.locator('.raw-message summary').all()) await summary.click()
+  await expect(page.locator('pre').filter({ hasText: eventId }).first()).toBeVisible()
+  await expect(page.locator('pre').filter({ hasText: eventId }).last()).toBeVisible()
+  await expect(page.locator('.raw-message small').first()).toContainText('x17-signal')
+  const body = await response.json()
+  expect(body.results[0].status).toBe('held')
+})
+
 test('Event logging records unknown intent while capture is stopped', async ({ page, request }) => {
   await page.goto(url)
   await page.getByRole('button', { name: 'Event logging', exact: true }).click()

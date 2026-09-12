@@ -105,7 +105,8 @@ verified.** No other state may, whatever else the row carries.
 | `guarded` | More than one destination position is linked to the trade, or a linked destination position has more than one contributing trade. Broker evidence cannot be attributed to this trade; an explicit allocation would be required. Not verified even when a timed read-back exists. |
 | `unattributed` | No source identity was ever linked. Not verified even when a timed read-back exists. |
 | `uncertain` | No destination position id, and the trade row is `uncertain` or `dispatching`: a write attempt was committed and its outcome is not known, or the broker refused it. Never retried automatically. |
-| `cancelled`, `rejected` | **Display labels only.** `VerifiedTrades.vue` knows how to render these two labels, but neither `classify()` nor `ledger_view` ever emits them as a `state`. A cancellation or rejection is carried in the row's `cancellation` field (the *Reason · origin* column) alongside whichever state the classifier produced: a source order that ended before any send is `candidate` with origin `source`; a broker-refused write is `uncertain` with origin `broker`. |
+| `cancelled` | Set by `ledger_view`, not `classify()`: a signal-driven cancel (see *Automatic unwind*) was accepted by the broker, the trade row is `resolved` and no destination position was ever linked. The pending order is gone and nothing opened, so the page offers no send. Not verified. |
+| `rejected` | **Display label only.** `VerifiedTrades.vue` knows how to render it, but neither `classify()` nor `ledger_view` ever emits it as a `state`. A broker-refused write is `uncertain` with a `cancellation` of origin `broker`; a source order that ended before any send is `candidate` with origin `source`. |
 
 The row also carries `reasons`, the classifier's sentences followed by the mapping
 ledger's own (`Destination identity not confirmed`, guard messages), and
@@ -202,6 +203,64 @@ brackets, an order type of MARKET, LIMIT or STOP, a side, and a finite positive 
 A trade is sent at most once in either mode: a paper record or a durable attempt
 refuses every later send. The Live switch in the UI requires a second confirming click.
 
+## Automatic unwind: cancel and close act without a click
+
+The rule is asymmetric. Opening is strictly manual, as above. Removing exposure is not:
+`capture/unwind.py` acts the moment the source reports that a lifecycle ended, because a
+cancel or close only ever removes exposure and an order left stranded because nobody was
+watching is the worse outcome.
+
+A relay signal (`POST /capture/signals`, bridge token only) with `kind` `cancelled` or
+`cancel` cancels the resting pending order; `kind` `closed` closes the open position. The
+signal is paired with the trade by the lifecycle **label** the strategy writes on its order
+comment - captured by the Quantower extension as `source_label` on the ACCEPTED CREATE
+event - scoped to the sending machine, the same label/scope identity `signal_copy` uses to
+pair an intent with its cancel. When the signal also names a symbol and it differs from the
+captured order's, the match is refused. Then, in order, before anything is written:
+
+- **Only trades actually sent.** The trade must hold a confirmed `broker_order_id` (to
+  cancel) or `broker_position_id` (to close). A paper send or an unsent candidate created
+  nothing at the broker: the broker session is never touched for it
+  (`test_paper_sent_trade_is_a_no_op_and_never_touches_the_broker`,
+  `test_a_trade_with_no_broker_id_is_a_no_op`).
+- **No toggle is consulted.** The per-source switch and the paper/live master switch govern
+  opening. A cancel or close still acts with the source switched off, with the mode back on
+  paper, and with signal copying disarmed
+  (`test_a_cancel_signal_cancels_the_sent_order_whatever_the_copy_controls_say_now`,
+  `test_a_closed_signal_closes_the_sent_position_with_the_source_off_and_mode_paper`).
+  Only the connection itself is required: a disconnected destination, another selected
+  account, or a process without `MTR_ENABLE_WRITES` is a refusal that names the trade and
+  its broker ids.
+- **A cancel never closes a filled position.** The linked order must still be returned by
+  `active_orders` with the instrument, side and type we recorded when it was created
+  (`unwind.pending_order_request`, shared with `signal_copy.prepare_cancel`). A filled order
+  is reported, not acted on.
+- **A close never guesses.** `MappingLedger.guard_position` refuses a split or merged
+  position; the position must be returned by `open_positions` under the exact id (or the
+  exact opening order id) with the trade's symbol and side, and that read is stored as
+  read-back evidence. A `closed` lifecycle whose copy never filled and is still a resting
+  order cancels that order instead, and the summary says so.
+- **At most once.** The attempt is committed through `claim()` (`attempts`,
+  `action_history`, key `CANCEL:signal:<clientEventId>` or `CLOSE:signal:<clientEventId>`)
+  before the write. An exception or an unrecognised response lands `uncertain` through the
+  same `record_failure` as every other write and is never retried; a redelivered signal is a
+  duplicate upstream, and a fresh signal for the same trade is refused by the trade's state
+  (`test_uncertain_outcome_is_recorded_and_never_retried`).
+
+Every outcome, including every refusal, is written through `record_reason`: origin
+`broker` with code `OK` when the broker accepted; `broker` with its own code when it
+refused; `transport` when the wire failed; `local` for our own checks (`OrderNotPending`,
+`OrderMismatch`, `PositionGuard`, `LifecycleEndedBeforeSend`, `DestinationNotConnected`,
+`AlreadyResolved`, ...), each naming the trade, the broker ids and the signal. The
+Verified trades row carries this in `unwind` (action, outcome, summary, origin, local
+time) under the State column and in the Evidence section; the signal's own row in the
+Signal activity feed shows the same decision. Nothing on this path can open, increase,
+re-send or re-open anything: the only broker writes it can make are
+`cancel_pending_order` and `close_position`.
+
+The former `cancel_pending` switch in the signal-copy settings is retired: unwinding is
+not optional. Saved settings that still carry the key load with it dropped.
+
 ## TradingBox / PAMM: a third viewpoint only
 
 `capture/pamm_publisher.py` tells TradingBox about a trade only after the broker
@@ -264,10 +323,19 @@ Stated so they can be checked, not argued around.
   1.1.0 in place; older code refuses a 1.1.0 journal with *Unsupported mapping journal
   schema version*. There is no downgrade path. Back up `capture.sqlite3` (and its
   `-wal`/`-shm` files, if present) before the first run of this release.
-- **`cancelled` and `rejected` are labels, not states.** See *States*. A trade whose
-  source order ended before any send is still classified `candidate`, so the page offers
-  its Send control; the server refuses the send with *Trade is not a candidate (state
-  resolved, candidate)* and that refusal is what the operator sees.
+- **`rejected` is a label, not a state.** See *States*. A trade whose source order ended
+  before any send is still classified `candidate`, so the page offers its Send control;
+  the server refuses the send with *Trade is not a candidate (state resolved, candidate)*
+  and that refusal is what the operator sees. A cancel or closed *signal* for an unsent
+  candidate records the reason on the row (code `LifecycleEndedBeforeSend`) but likewise
+  leaves it a candidate.
+- **Unwind depends on the label reaching the ledger.** The pairing key is `source_label`,
+  which the extension fills from the Quantower order comment. A strategy order whose
+  comment does not carry the lifecycle label, or a signal whose `label` is blank, cannot be
+  paired; the signal is recorded as *No sent trade is linked to lifecycle ...* and nothing
+  is done. A cancel that arrives while the destination is disconnected is recorded as a
+  refusal and is not re-evaluated when the same signal is redelivered (redelivery is a
+  duplicate); a fresh signal for the lifecycle acts.
 - **Copy-controls fallback covers a missing file.** A missing `copy-controls.json`
   resolves to paper with every source off. A present but invalid file raises at load
   rather than silently falling back; `test_defaults_are_paper_with_every_source_off`

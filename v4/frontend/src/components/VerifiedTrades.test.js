@@ -117,3 +117,30 @@ test('the send control appears only on candidate rows and is disabled when the s
   expect(request).not.toHaveBeenCalled()
   wrapper.unmount()
 })
+
+test('a signal-driven cancel or close shows its outcome on the row and its evidence below; a cancelled row offers no send', () => {
+  const wrapper = mount(VerifiedTrades, { props: { rows: [
+    row({ trade_id: 'u1', state: 'cancelled', source_enabled: true, unwind: { action: 'CANCEL', outcome: 'accepted', at: '2026-09-11T10:05:00Z',
+      request_id: 'cancel-1', request: { id: 'aq-1', type: 'LIMIT' }, origin: 'broker', summary: 'Broker accepted the cancel of pending order aq-1' } }),
+    row({ trade_id: 'u2', state: 'verified_open', unwind: { action: 'CLOSE', outcome: 'uncertain', at: '2026-09-11T10:06:00Z',
+      request_id: 'closed-1', request: { positionId: 'aq-p1' }, origin: 'transport', summary: 'Outcome unconfirmed after TimeoutError' } }),
+    row({ trade_id: 'u3', state: 'verified_open', unwind: { action: 'CLOSE', outcome: 'held', at: '2026-09-11T10:07:00Z',
+      request_id: 'closed-2', request: null, origin: 'local', summary: 'Split destination positions require an explicit action allocation' } }),
+    row({ trade_id: 'plain', state: 'candidate', unwind: null }),
+  ] } })
+  const cancelled = rowOf(wrapper, 'u1')
+  expect(cancelled.find('.unwind').text()).toContain('Cancel on signal · broker accepted')
+  expect(cancelled.find('.unwind').classes()).toContain('unwind-accepted')
+  expect(cancelled.find('.badge.state').text()).toBe('Cancelled')
+  expect(cancelled.find('button').exists()).toBe(false)
+  expect(rowOf(wrapper, 'u2').find('.unwind').text()).toContain('Close on signal · outcome unconfirmed')
+  expect(rowOf(wrapper, 'u3').find('.unwind').text()).toContain('Close on signal · not sent')
+  expect(rowOf(wrapper, 'u3').find('.unwind').classes()).toContain('unwind-held')
+  expect(rowOf(wrapper, 'plain').find('.unwind').exists()).toBe(false)
+  expect(wrapper.text()).toContain('signal cancel-1 · broker')
+  expect(wrapper.text()).toContain('Broker accepted the cancel of pending order aq-1')
+  expect(wrapper.text()).toContain('Split destination positions require an explicit action allocation')
+  expect(wrapper.text()).toContain('"positionId": "aq-p1"')
+  expect(request).not.toHaveBeenCalled()
+  wrapper.unmount()
+})

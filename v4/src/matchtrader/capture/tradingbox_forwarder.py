@@ -39,20 +39,29 @@ def end_to_end(headers):
 
 
 def validate_url(value):
+    """Any https destination the operator names. The host is deliberately not restricted -
+    forwarding is opt-in and the operator chooses where their own raw data goes - but the
+    transport is: plain http would put trade data on the wire in clear, and credentials in
+    the URL would be copied into settings and logs."""
     url = urlsplit(value)
-    if (url.scheme != 'https' or url.hostname not in {'tradingbox.pro', 'tradingbox.org'}
-            or url.username or url.password or url.port not in {None, 443}
-            or url.query or url.fragment or url.path != '/api/hcamm/events'):
-        raise ValueError('Use https://tradingbox.pro/api/hcamm/events or https://tradingbox.org/api/hcamm/events')
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value) or url.port == 0:
+        raise ValueError('Forwarding URL must have a valid port and no whitespace or control characters')
+    if url.scheme != 'https' or not url.hostname:
+        raise ValueError('Forwarding destination must be an https URL, for example '
+                         'https://example.com/api/hcamm/events')
+    if url.username or url.password:
+        raise ValueError('Put credentials in a header, not in the forwarding URL')
+    if url.fragment:
+        raise ValueError('A forwarding destination cannot carry a URL fragment')
     return value
 
 
 def send_once(url, headers, body, *, method='POST'):
     """Raw HTTP body/status/end-to-end headers, without redirects or decompression."""
     parsed = urlsplit(url)
-    connection = http.client.HTTPSConnection(parsed.hostname, timeout=15)
+    connection = http.client.HTTPSConnection(parsed.hostname, port=parsed.port, timeout=15)
     try:
-        target = parsed.path + ('?' + parsed.query if parsed.query else '')
+        target = (parsed.path or '/') + ('?' + parsed.query if parsed.query else '')
         connection.putrequest(method, target, skip_accept_encoding=True)
         for name, value in end_to_end(headers):
             if name.lower() != 'expect':

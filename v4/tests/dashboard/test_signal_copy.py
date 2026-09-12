@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -245,7 +246,7 @@ class PendingBroker(Broker):
 
 def entry_service(tmp_path):
     service = SignalCopy(tmp_path)
-    cfg = config(additional_sources=['panel'], cancel_pending=True)
+    cfg = config(additional_sources=['panel'])
     cfg['symbols']['US TECH 100']['order_type'] = 'ENTRY'
     service.configure(cfg)
     service.arm(True)
@@ -293,7 +294,9 @@ def test_intervals_accounts_and_sources_do_not_share_cancel_links(tmp_path):
         assert service.receive([original], api, 'demo', True)['results'][0]['status'] == 'accepted'
         for changes in [{'connectionName':'Time - 30s'}, {'accountId':'source-b'}, {'source':'panel'}, {'label':'other'}]:
             cancel = {**original, 'kind':'cancelled', 'clientEventId':str(changes), **changes}
-            assert service.receive([cancel], api, 'demo', True)['results'][0]['status'] == 'held'
+            result = service.receive([cancel], api, 'demo', True)['results'][0]
+            # Nothing we sent is linked under that scope: recorded, with the reason, and no write.
+            assert result['status'] == 'captured' and 'No sent trade is linked' in result['reason']
         assert not api.cancellations
         other = {**original, 'connectionName':'Time - 30s', 'clientEventId':'other-interval', 'timestampUtc':datetime.now(UTC).isoformat()}
         assert service.receive([other], api, 'demo', True)['results'][0]['status'] == 'accepted'
@@ -328,9 +331,15 @@ def test_lifecycle_dedup_live_off_and_quote_freshness(tmp_path):
         service.receive([original], api, 'demo', True)
         result = service.receive([{**original, 'clientEventId':'different-id'}], api, 'demo', True)['results'][0]
         assert result['status'] == 'held' and len(api.calls) == 1
+        # The owner's rule is asymmetric: the live switch gates opening, never unwinding. The pending
+        # order this module placed exists at the broker, so its cancel acts with the switch off.
         service.arm(False)
-        service.receive([packet(kind='cancelled', clientEventId='off-cancel')], api, 'demo', True)
-        assert not api.cancellations
+        result = service.receive([packet(kind='cancelled', clientEventId='off-cancel')], api, 'demo', True)['results'][0]
+        assert result['status'] == 'accepted' and api.cancellations == [
+            {'instrument': 'NAS100', 'id': 'order-1', 'orderSide': 'SELL', 'type': 'LIMIT'}]
+        # ...but it never acts without the connected destination, and never twice.
+        disconnected = service.receive([packet(kind='cancelled', clientEventId='off-cancel-2')], None, 'demo', False)['results'][0]
+        assert disconnected['status'] == 'held' and len(api.cancellations) == 1
         service.arm(True)
         api.quote_time -= 60000
         result = service.receive([packet(label='stale-quote', clientEventId='stale-quote')], api, 'demo', True)['results'][0]
@@ -375,5 +384,57 @@ def test_x17_attribution_and_same_batch_interval_isolation(tmp_path):
         other_close = packet(kind='closed', clientEventId='closed-30s', connectionName='Time - 30s')
         assert service.receive([intent, other_close], api, 'demo', True)['results'][0]['status'] == 'accepted'
         assert len(api.calls) == 1
+    finally:
+        service.close()
+
+
+def test_cancel_pending_flag_is_retired_and_old_settings_still_load(tmp_path):
+    value = SignalSettings.model_validate(config(cancel_pending=True))
+    assert 'cancel_pending' not in value.model_dump()
+    (tmp_path / 'signal-copy-settings.json').write_text(json.dumps(config(cancel_pending=False)))
+    service = SignalCopy(tmp_path)
+    try:
+        assert service.config is not None and 'cancel_pending' not in service.settings()['config']
+        with pytest.raises(ValueError):
+            SignalSettings.model_validate(config(unknown_switch=True))
+    finally:
+        service.close()
+
+
+def test_unwind_signals_act_on_the_ledger_without_any_switch_and_dedupe_redelivery(tmp_path):
+    from matchtrader.capture.event import CaptureEvent
+    from tests.capture.test_unwind import LABEL, Broker, sent
+
+    event = CaptureEvent(
+        event_id='event1', machine='qt', connection_id='connection', account_id='source', order_id='order1',
+        request_id='run:1', emitted_at=datetime.now(UTC), kind='ACCEPTED', action='CREATE', source='X17',
+        symbol='EURUSD', side='BUY', order_type='LIMIT', quantity='1', price='1.15000', sl='1.14980', tp='1.16',
+    )
+    broker = Broker()
+    store, trade_id = sent(tmp_path / 'ledger', event, broker)
+    service = SignalCopy(tmp_path / 'relay', ledger=store)  # never configured, never armed
+    try:
+        cancel = packet(kind='cancelled', clientEventId='cancel-1', label=LABEL, symbol='EURUSD')
+        result = service.receive([cancel], broker, 'demo', True)['results'][0]
+        assert result['status'] == 'accepted' and result['destination_account'] == 'demo'
+        assert result['copy_request']['id'] == 'aqua1' and result['copy_response']['status'] == 'OK'
+        assert broker.writes() == ['CANCEL'] and store.trade(trade_id)['state'] == 'resolved'
+        # Redelivery of the same signal is a duplicate: nothing is evaluated again.
+        again = service.receive([cancel], broker, 'demo', True)['results'][0]
+        assert again['duplicate'] and again['status'] == 'accepted' and broker.writes() == ['CANCEL']
+        # A closed signal for an unknown lifecycle is recorded with the reason and touches nothing.
+        other = service.receive([packet(kind='closed', clientEventId='closed-1', label='nobody')],
+                                broker, 'demo', True)['results'][0]
+        assert other['status'] == 'captured' and "No sent trade is linked to lifecycle 'nobody'" in other['reason']
+        unlabelled = service.receive([packet(kind='closed', clientEventId='closed-2', label='')],
+                                     broker, 'demo', True)['results'][0]
+        assert unlabelled['status'] == 'captured' and 'no lifecycle label' in unlabelled['reason']
+        assert broker.writes() == ['CANCEL']
+        # An unavailable ledger leaves completion unconfirmed; this failure writes nothing.
+        store.close()
+        broken = service.receive([packet(kind='cancelled', clientEventId='cancel-3', label=LABEL, symbol='EURUSD')],
+                                 broker, 'demo', True)['results'][0]
+        assert broken['status'] == 'uncertain' and 'ProgrammingError' in broken['reason'] and LABEL in broken['reason']
+        assert broker.writes() == ['CANCEL']
     finally:
         service.close()

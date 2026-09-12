@@ -34,14 +34,18 @@ test('saves fixed volume separately from the live switch and disables editing wh
 })
 
 
-test('X17 and manual P01 preset selects pending entry and scoped cancellation without arming', async () => {
+test('X17 and manual P01 preset selects pending entry without arming; unwinding is not a switch', async () => {
   request.mockReset()
   request.mockResolvedValue({ config: null, live: false })
   const wrapper = mount(SignalCopySettings, { props: { state: { p01_log: { machine: 'qt' } } } })
   await flushPromises()
   await wrapper.findAll('button').find(button => button.text() === 'Use X17 + manual P01 at logged entry').trigger('click')
   expect(wrapper.findAll('select').some(select => select.element.value === 'ENTRY')).toBe(true)
-  expect(wrapper.findAll('label').find(label => label.text().includes('Forward cancellation')).find('input').element.checked).toBe(true)
+  // The retired cancel_pending switch is gone: a cancel or closed signal always acts on a sent trade.
+  expect(wrapper.findAll('label').some(label => label.text().includes('Forward cancellation'))).toBe(false)
+  expect(wrapper.text()).toContain('A cancel or closed signal always acts on a trade you already sent')
+  expect(wrapper.text()).toContain('Nothing is ever opened automatically')
+  expect(wrapper.vm.config ?? {}).not.toHaveProperty('cancel_pending')
   expect(wrapper.findAll('label').find(label => label.text().includes('Also accept structured')).find('input').element.checked).toBe(true)
   expect(wrapper.findAll('label').find(label => label.text().includes('Copy P01 chart intents from the local log')).find('input').element.checked).toBe(false)
   expect(request).not.toHaveBeenCalledWith('signal-copying', { enabled: true })

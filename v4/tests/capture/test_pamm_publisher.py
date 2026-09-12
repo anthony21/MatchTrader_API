@@ -161,7 +161,8 @@ def test_a_failed_publication_never_changes_a_real_verified_trade(tmp_path, even
 
 
 def test_an_invalid_forwarder_url_refuses_before_any_row_or_send(tmp_path):
-    forwarder = Forwarder(url="https://evil.example/api/hcamm/events")
+    # Any https host is allowed now; plain http never is, so trade data cannot leave in clear.
+    forwarder = Forwarder(url="http://example.com/api/hcamm/events")
     store, pamm = publisher(tmp_path, forwarder)
     with pytest.raises(ValueError):
         pamm.publish(verified())

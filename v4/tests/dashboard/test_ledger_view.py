@@ -155,3 +155,37 @@ def test_sections_hash_identically_across_two_builds_with_no_new_evidence(tmp_pa
     for name in first:
         assert Handler.section_digest(name, first[name]) == Handler.section_digest(name, second[name]), name
     store.close()
+
+
+def test_unwind_field_carries_the_latest_signal_driven_cancel_or_close_and_a_confirmed_cancel_is_cancelled():
+    cancel = {"action_key": "CANCEL:signal:c1", "action": "CANCEL", "outcome": "accepted", "request_id": "c1",
+              "request": {"id": "aq-1"}, "updated_at": "2026-09-10T01:02:00+00:00"}
+    accepted = {"action_key": "CANCEL:signal:c1", "attempt": 1, "origin": "broker", "outcome": "accepted",
+                "code": "OK", "summary": "Broker accepted the cancel of pending order aq-1", "evidence": "e",
+                "at": "2026-09-10T01:02:00+00:00"}
+    create = {"action_key": "CREATE", "action": "CREATE", "outcome": "accepted", "request_id": "run:1",
+              "request": {}, "updated_at": "2026-09-10T01:00:00+00:00"}
+    row = ledger_view.verified_row(candidate(state="resolved", actions=[cancel, create], outcome_reasons=[accepted]),
+                                   controls(P01=True), None)
+    assert row["state"] == "cancelled" and row["verified"] is False
+    assert row["unwind"] == {"action": "CANCEL", "outcome": "accepted", "at": "2026-09-10T01:02:00+00:00",
+                             "request_id": "c1", "request": {"id": "aq-1"}, "origin": "broker",
+                             "summary": "Broker accepted the cancel of pending order aq-1"}
+    assert row["reasons"][0].startswith("The broker accepted the cancel")
+    assert row["cancellation"]["origin"] == "broker" and row["cancellation"]["outcome"] == "accepted"
+    # A refusal without any attempt still surfaces, with its local origin; the state is untouched.
+    refusal = {"action_key": "CLOSE:signal:x1", "attempt": 1, "origin": "local", "outcome": "held",
+               "code": "PositionGuard", "summary": "Split destination positions require an explicit action allocation",
+               "evidence": "local pre-check", "at": "2026-09-10T01:03:00+00:00"}
+    row = ledger_view.verified_row(verified(outcome_reasons=[refusal]), controls(), None)
+    assert row["state"] == "verified_open"
+    assert row["unwind"] == {"action": "CLOSE", "outcome": "held", "at": "2026-09-10T01:03:00+00:00",
+                             "request_id": "x1", "request": None, "origin": "local", "summary": refusal["summary"]}
+    # A confirmed close never changes the classifier's state: only a read-back may say closed.
+    close = {**cancel, "action_key": "CLOSE:signal:x2", "action": "CLOSE", "request_id": "x2"}
+    row = ledger_view.verified_row(verified(state="resolved", actions=[close]), controls(), None)
+    assert row["state"] == "verified_open" and row["unwind"]["action"] == "CLOSE" and row["unwind"]["summary"] is None
+    # A cancel that left a position (partial fill) is not "cancelled".
+    row = ledger_view.verified_row(verified(state="open", actions=[cancel], outcome_reasons=[accepted]), controls(), None)
+    assert row["state"] == "verified_open"
+    assert ledger_view.verified_row(candidate(), controls(), None)["unwind"] is None

@@ -5,6 +5,32 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## Unreleased - automatic cancel and close for trades already sent
+
+X17 `/capture/signals` requests and receiver replies now enter the live Raw Data
+feed directly, including receiver errors. Unauthenticated traffic stays excluded.
+The existing relay archive remains unchanged. Forwarding also accepts operator-chosen
+HTTPS destinations, preserving their custom port and path.
+
+Opening stays manual; unwinding no longer waits for a click. A relay signal of kind
+cancelled/cancel or closed for a lifecycle whose trade the owner sent live cancels the
+resting pending order or closes the open position at once (capture/unwind.py), paired by
+the strategy's lifecycle label on the captured order and scoped to the machine. It acts
+whatever the copy controls or the signal-copy switch say now, only for trades holding a
+confirmed broker order or position id, never for a paper send or an unsent candidate,
+never on a split or merged position, and at most once: the attempt is committed before
+the write and an unconfirmed outcome stays uncertain for reconciliation. Every action
+and refusal is recorded with an investigable origin and shown on the Verified trades
+row; a broker-confirmed cancel of a never-filled order renders the row as cancelled. The
+signal-copy cancel_pending switch is retired and its legacy cancel path now also ignores
+the arming switch. See VERIFIED_TRADES.md, *Automatic unwind*.
+
+Completion review added a second split/merge check after learning position links,
+an explicit connected-account check, and recorded preflight failures. Unexpected
+failures after processing begins report an unconfirmed outcome rather than claiming
+no broker write occurred. Opening verification remains separate from closing
+verification; a pre-close read proves only that the position was open.
+
 ## 1.0.0 - verified-trade ledger, copy controls and push-only shell
 
 Record, for every copied trade, the broker's own read-back as the only proof of

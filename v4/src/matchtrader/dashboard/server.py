@@ -356,7 +356,22 @@ class Handler(BaseHTTPRequestHandler):
                 if (self.headers.get('Origin') is not None or not token or not hmac.compare_digest(
                         self.headers.get('Authorization', '').encode(), ('Bearer ' + token).encode())):
                     return self.reply(401, {'error': 'Local signal receiver authentication required'})
-                return self.reply(202, self.server.controller.receive_signals(json.loads(body)))
+                # Show it the moment it lands. The relay archives these bytes to disk and the
+                # collector ships them later; waiting for that round trip would delay the Raw
+                # Data page by the collector's cycle for an event already in hand.
+                raw = self.server.controller.native_store.raw_log
+                raw.append('in', 'x17-signal', body.decode('utf-8', errors='replace'), token)
+                status = 202
+                try:
+                    result = self.server.controller.receive_signals(json.loads(body))
+                except (ValueError, TypeError, KeyError):
+                    status, result = 400, {'error': 'Action could not complete. Check the selected account and connection status.'}
+                except TimeoutError:
+                    status, result = 408, {'error': 'Request timed out'}
+                except Exception:
+                    status, result = 500, {'error': 'Local service error. Check the ledger path and restart the dashboard.'}
+                raw.append('out', 'x17-signal', result, token)
+                return self.reply(status, result)
             if self.path == '/logging/events':
                 token = self.server.bridge_token
                 if (self.headers.get('Origin') is not None or not token or not hmac.compare_digest(
