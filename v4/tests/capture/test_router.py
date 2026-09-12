@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -420,3 +421,42 @@ def test_replay_recovers_missing_terminal_decision_without_dispatch(tmp_path, ro
     assert replay['status'] == ('accepted' if completed else 'held')
     assert router.store.feed()[0]['decision'] == replay['status']
     router.store.close()
+
+
+def test_quantise_prices_puts_prices_on_the_destination_grid():
+    """Sources publish raw floats at their own tick; send what the broker can represent."""
+    event = SimpleNamespace(side="SELL", action="CREATE", order_type="LIMIT",
+                            price=77498.42683130718, sl=77498.52683130719, tp=77498.32683130717)
+    graded = CaptureRouter.quantise_prices({"pricePrecision": 2}, event)
+    assert (graded.price, graded.sl, graded.tp) == (
+        Decimal("77498.43"), Decimal("77498.53"), Decimal("77498.33"))
+    assert graded.side == "SELL" and graded.order_type == "LIMIT"
+
+
+def test_quantise_prices_uses_one_decimal_where_the_broker_does():
+    event = SimpleNamespace(side="SELL", price=7656.299999999985, sl=7732.175, tp=7611.425)
+    graded = CaptureRouter.quantise_prices({"pricePrecision": 1}, event)
+    assert (graded.price, graded.sl, graded.tp) == (
+        Decimal("7656.3"), Decimal("7732.2"), Decimal("7611.4"))
+
+
+def test_quantise_prices_leaves_absent_brackets_and_unknown_precision_alone():
+    event = SimpleNamespace(side="BUY", price=100.987, sl=0, tp=None)
+    graded = CaptureRouter.quantise_prices({"pricePrecision": 2}, event)
+    assert graded.price == Decimal("100.99") and graded.sl == 0 and graded.tp is None
+    untouched = CaptureRouter.quantise_prices({}, event)
+    assert untouched.price == 100.987
+
+
+def test_bracket_collapsing_onto_entry_after_rounding_is_refused():
+    """A stop inside one tick of entry must not be sent as a valid bracket."""
+    class Inst:
+        def model_dump(self):
+            return {"symbol": "SPX500", "volumeMin": "0.01", "volumeMax": "100",
+                    "volumeStep": "0.01", "pricePrecision": 1}
+
+    api = SimpleNamespace(instruments=lambda: [SimpleNamespace(symbol="SPX500", model_dump=Inst().model_dump)])
+    event = SimpleNamespace(side="SELL", action="CREATE", order_type="LIMIT",
+                            price=7656.04, sl=7656.06, tp=7656.02)
+    with pytest.raises(ValueError, match="wrong side of entry"):
+        CaptureRouter._validate_instrument(api, "SPX500", Decimal("0.01"), event)

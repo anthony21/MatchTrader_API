@@ -339,11 +339,13 @@ class SignalCopy:
             raise ValueError('Source intent has no supported order type')
         event = SimpleNamespace(action='CREATE', order_type=order_type, price=signal.entry, sl=signal.stopLoss, tp=signal.takeProfit, side=side)
         if self.copy_mode != 'paper':
-            CaptureRouter._validate_instrument(api, mapping.destination, mapping.fixed_lots, event)
-        kwargs = {'instrument': mapping.destination, 'orderSide': side, 'volume': mapping.fixed_lots, 'slPrice': signal.stopLoss, 'tpPrice': signal.takeProfit}
+            # Returns the event on the destination's price grid; paper keeps the source
+            # prices because it must never read from the broker.
+            event = CaptureRouter._validate_instrument(api, mapping.destination, mapping.fixed_lots, event)
+        kwargs = {'instrument': mapping.destination, 'orderSide': side, 'volume': mapping.fixed_lots, 'slPrice': event.sl, 'tpPrice': event.tp}
         if order_type == 'MARKET':
             return kwargs, api.open_position if self.copy_mode != 'paper' else None
-        return {**kwargs, 'type': order_type, 'price': signal.entry}, api.create_pending_order if self.copy_mode != 'paper' else None
+        return {**kwargs, 'type': order_type, 'price': event.price}, api.create_pending_order if self.copy_mode != 'paper' else None
 
     def prepare_cancel(self, signal, raw, api, destination, verified):
         """Cancel a pending order this module dispatched itself. Deliberately not gated by the arming
