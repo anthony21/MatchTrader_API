@@ -24,6 +24,9 @@ class P01Log:
         self.pending = b''
         self.error = ''
         self.intents = deque(maxlen=200)
+        # Lifecycle ends the tool reports: a per-label release ("level available again") and the
+        # Close/Cancel All card. Each is turned into a cancel for the copy it ended, if one was sent.
+        self.releases = deque(maxlen=200)
 
     def start(self):
         """Start at EOF: never replay historical intents after Start capture."""
@@ -36,6 +39,7 @@ class P01Log:
             self.pending = b''
             self.labels.clear()
             self.intents.clear()
+            self.releases.clear()
 
     def poll(self):
         with self.lock:
@@ -112,11 +116,19 @@ class P01Log:
         self.events.append(row)
         if action == 'INTENT':
             self.intents.append(row)
+        elif action in {'RELEASE', 'CLOSE_CANCEL_INTENT'}:
+            self.releases.append(row)
 
     def drain_intents(self):
         with self.lock:
             rows = list(self.intents)
             self.intents.clear()
+            return rows
+
+    def drain_releases(self):
+        with self.lock:
+            rows = list(self.releases)
+            self.releases.clear()
             return rows
 
     def signal(self, row):

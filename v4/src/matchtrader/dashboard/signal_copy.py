@@ -188,16 +188,17 @@ class SignalCopy:
                            lambda: self.prepare(signal, closed, api, destination, verified, now, raw=raw))
         elif self.copy_mode is not None and signal.kind == 'closed':
             pass  # This flow only opens orders and cancels pending orders; filled positions are left alone.
-        elif self.copy_mode == 'paper' and signal.kind in unwind.CANCEL_KINDS:
-            pass  # Paper cannot cancel a live broker order.
+        elif (self.copy_mode == 'paper' and signal.kind in unwind.CANCEL_KINDS
+              and not self.live_copy(raw, destination)):
+            pass  # Paper never created a broker order for this lifecycle, so there is nothing to cancel.
         elif signal.kind in unwind.UNWIND_KINDS:
             self._unwind(key, signal, raw, api, destination, verified)
         return self.result(self.db.execute('SELECT * FROM signals WHERE id=?', (key,)).fetchone())
 
-    def _dispatch(self, key, signal, destination, preparer):
+    def _dispatch(self, key, signal, destination, preparer, *, force_live=False):
         try:
             kwargs, method = preparer()
-            if self.copy_mode == 'paper':
+            if self.copy_mode == 'paper' and not force_live:
                 with self.db:
                     self.db.execute("UPDATE signals SET decision='paper',destination=?,request=?,reason=? WHERE id=?",
                                     (destination, json.dumps(kwargs, default=str), 'Paper: broker request recorded; nothing sent', key))
@@ -233,7 +234,9 @@ class SignalCopy:
     def _unwind(self, key, signal, raw, api, destination, verified):
         """A cancel or closed signal acts on exposure we created, now, whatever the toggles say."""
         if self.copy_mode is not None and signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
-            self._dispatch(key, signal, destination, lambda: self.prepare_cancel(signal, raw, api, destination, verified))
+            # Cancelling an order this module placed is never a paper act: the order is real.
+            self._dispatch(key, signal, destination,
+                           lambda: self.prepare_cancel(signal, raw, api, destination, verified), force_live=True)
             return
         verb = 'cancel' if signal.kind in unwind.CANCEL_KINDS else 'close'
         outcome = None
@@ -253,7 +256,8 @@ class SignalCopy:
                     json.dumps(outcome['response'], default=str) if outcome['response'] is not None else None, key))
             return
         if signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
-            self._dispatch(key, signal, destination, lambda: self.prepare_cancel(signal, raw, api, destination, verified))
+            self._dispatch(key, signal, destination,
+                           lambda: self.prepare_cancel(signal, raw, api, destination, verified), force_live=True)
             return
         reason = (f'Signal carries no lifecycle label; nothing to {verb}' if not signal.label else
                   f'No sent trade is linked to lifecycle {signal.label!r} from {signal.machineId}; nothing to {verb}')
@@ -263,6 +267,12 @@ class SignalCopy:
     def legacy_copy(self, raw, destination):
         """True when this module itself dispatched the intent of this lifecycle while armed."""
         return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination for r in self.related(raw))
+
+    def live_copy(self, raw, destination):
+        """True when the broker accepted a live copy of this lifecycle: exposure exists to unwind,
+        whatever the master switch says now. A paper record never counts."""
+        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination
+                   and r['decision'] == 'accepted' for r in self.related(raw))
 
     def check_route(self, signal, api, destination, verified, now):
         config = self.config

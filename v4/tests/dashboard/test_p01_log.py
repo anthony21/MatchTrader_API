@@ -144,6 +144,113 @@ def test_live_p01_route_uses_exact_state_fixed_lots_and_source_order_type(tmp_pa
         controller.close()
 
 
+def p01_controller(tmp_path, settings, broker, mode):
+    import platform
+
+    from matchtrader.dashboard.controller import DashboardController
+    from matchtrader.dashboard.copy_controls import CopyControls
+    from tests.dashboard.test_signal_copy import config
+
+    controller = DashboardController(settings, tmp_path / 'data', interactive_copying=True)
+    controller.p01_log = P01Log(tmp_path / 'P01_RR.log')
+    route = config(machine_id=platform.node(), source='P01_LOG', p01_log_enabled=True,
+                   destination_account=controller.selected)
+    route['symbols']['US TECH 100']['order_type'] = 'SOURCE'
+    controller.signal_copy.configure(route)
+    from types import SimpleNamespace
+    broker.connection = SimpleNamespace(account_id=controller.selected)
+    controller.connection = 'connected'
+    controller.api, controller.native.demo_verified = broker, False
+    controller.running = True
+    controller.copy_controls = CopyControls(mode=mode)
+    return controller
+
+
+def open_box(controller, label, stamp, side=1, order_type='Limit', sl=105, tp=95):
+    state = {'utc': stamp, 'action': 'open', 'label': label, 'side': side,
+             'symbol': 'US TECH 100', 'entry': 100, 'sl': sl, 'tp': tp, 'volume': 0}
+    (controller.p01_log.path.parent / 'P01_STATE.json').write_text(json.dumps(state))
+    controller.p01_log.record(f"{stamp} box OPEN clicked id='{label}' side={side} type={order_type} entry=100 sl={sl} tp={tp}")
+    controller._copy_p01_intents()
+
+
+def test_p01_release_cancels_the_live_copy_once_and_ignores_labels_never_sent(tmp_path, settings):
+    from tests.dashboard.test_signal_copy import PendingBroker
+
+    broker = PendingBroker()
+    controller = p01_controller(tmp_path, settings, broker, 'live')
+    log = controller.p01_log
+    try:
+        stamp = datetime.now(UTC).isoformat()
+        open_box(controller, 'P01RR_1_1', stamp)
+        assert len(broker.calls) == 1 and broker.pending[0].id == 'order-1'
+        log.record(f"{stamp} level available again: P01RR_1_1 (trade ended)")
+        log.record(f"{stamp} signal band x P01RR_1_1")
+        controller._unwind_p01_releases()
+        assert broker.cancellations == [{'instrument': 'NAS100', 'id': 'order-1', 'orderSide': 'SELL', 'type': 'LIMIT'}]
+        assert broker.pending == []
+        release = next(e for e in log.feed() if e['action'] == 'RELEASE')
+        assert release['copy_result']['status'] == 'accepted'
+        # A second release for the same label is refused, never re-sent.
+        log.record(f"{stamp} level available again: P01RR_1_1 (trade ended)")
+        controller._unwind_p01_releases()
+        assert len(broker.cancellations) == 1
+        # A release for a label that was never copied touches nothing.
+        log.record(f"{stamp} level available again: P01RR_9_9 (trade ended)")
+        controller._unwind_p01_releases()
+        assert len(broker.cancellations) == 1
+    finally:
+        controller.api = None
+        controller.close()
+
+
+def test_close_cancel_all_card_cancels_every_open_live_copy(tmp_path, settings):
+    from tests.dashboard.test_signal_copy import PendingBroker
+
+    broker = PendingBroker()
+    controller = p01_controller(tmp_path, settings, broker, 'live')
+    log = controller.p01_log
+    try:
+        stamp = datetime.now(UTC).isoformat()
+        open_box(controller, 'P01RR_2_1', stamp)
+        open_box(controller, 'P01RR_2_2', stamp, side=0, sl=95, tp=105)
+        assert [o.id for o in broker.pending] == ['order-1', 'order-2']
+        log.record(f"{stamp} card: Close/Cancel All")
+        controller._unwind_p01_releases()
+        assert sorted(c['id'] for c in broker.cancellations) == ['order-1', 'order-2'] and broker.pending == []
+        card = next(e for e in log.feed() if e['action'] == 'CLOSE_CANCEL_INTENT')
+        assert card['copy_result']['status'] == 'multiple' and 'P01RR_2_1: accepted' in card['copy_result']['reason']
+    finally:
+        controller.api = None
+        controller.close()
+
+
+def test_a_live_copy_is_still_cancelled_after_the_master_switch_returns_to_paper(tmp_path, settings):
+    from matchtrader.dashboard.copy_controls import CopyControls
+    from tests.dashboard.test_signal_copy import PendingBroker
+
+    broker = PendingBroker()
+    controller = p01_controller(tmp_path, settings, broker, 'live')
+    log = controller.p01_log
+    try:
+        stamp = datetime.now(UTC).isoformat()
+        open_box(controller, 'P01RR_3_1', stamp)
+        assert len(broker.pending) == 1
+        controller.copy_controls = CopyControls(mode='paper')
+        log.record(f"{stamp} level available again: P01RR_3_1 (trade ended)")
+        controller._unwind_p01_releases()
+        assert len(broker.cancellations) == 1 and broker.pending == []
+        # But a paper-only copy has nothing at the broker: a release is a no-op.
+        open_box(controller, 'P01RR_3_2', stamp)
+        assert len(broker.calls) == 1
+        log.record(f"{stamp} level available again: P01RR_3_2 (trade ended)")
+        controller._unwind_p01_releases()
+        assert len(broker.cancellations) == 1
+    finally:
+        controller.api = None
+        controller.close()
+
+
 def test_p01_log_copy_follows_the_shared_paper_switch_and_never_touches_the_broker_in_paper(tmp_path, settings):
     import platform
 

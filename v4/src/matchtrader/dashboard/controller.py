@@ -480,6 +480,7 @@ class DashboardController:
                         break
                     if self.p01_log.poll():
                         self._copy_p01_intents()
+                        self._unwind_p01_releases()
                         self.native_store.notify_stream()
                     for offset, payload in tail.poll() if tail else ():
                         if self.bridge:
@@ -553,6 +554,49 @@ class DashboardController:
                 row['copy_result'] = {'status': 'held',
                                       'reason': 'P01 state unavailable, mismatched or lifecycle ended; no copy'}
                 row['reason'] += ' | Copy held: matching current P01 state required; ended intents are not copied'
+
+    def _unwind_p01_releases(self):
+        """A P01 release ("level available again ... (trade ended)") or the Close/Cancel All card
+        ends the lifecycle at the source. If this owner sent a live copy for that label, cancel
+        it now through the same unwind path relay cancels use: no click, no toggle, at most once."""
+        rows = self.p01_log.drain_releases()
+        config = self.signal_copy.config
+        if not rows or not config or not config.p01_log_enabled:
+            return
+        self.signal_copy.copy_mode = self.copy_controls.mode
+        machine = platform.node()
+        for row in rows:
+            labels = [row['trade_id']] if row['trade_id'] else self._p01_labels_with_live_copies(machine)
+            outcomes = []
+            for label in labels:
+                sent = self.signal_copy.db.execute(
+                    "SELECT payload FROM signals WHERE machine=? AND source='P01_LOG' AND label=? AND kind='intent' "
+                    "AND destination=? AND request IS NOT NULL ORDER BY rowid DESC LIMIT 1",
+                    (machine, label, self.selected)).fetchone()
+                if not sent:
+                    continue
+                cancel = json.loads(sent['payload'])
+                digest = hashlib.sha256(json.dumps([label, row['emitted_at'], row['id']]).encode()).hexdigest()
+                cancel.update(kind='cancelled', timestampUtc=row['emitted_at'], clientEventId='p01-cancel-' + digest)
+                try:
+                    result = self.signal_copy.receive(
+                        [cancel], self.api, self.selected, self._destination_verified())['results'][0]
+                except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as error:
+                    result = {'status': 'uncertain', 'reason': f'Cancel processing failed ({type(error).__name__})'}
+                outcomes.append((label, result))
+            if outcomes:
+                row['copy_result'] = outcomes[0][1] if len(outcomes) == 1 else {
+                    'status': 'multiple', 'reason': '; '.join(f'{lb}: {r["status"]}' for lb, r in outcomes)}
+                row['reason'] += ' | Cancel: ' + '; '.join(f'{lb} {r["status"]}: {r["reason"]}' for lb, r in outcomes)
+
+    def _p01_labels_with_live_copies(self, machine):
+        """Labels of P01 log intents this owner sent to the selected account and has not yet cancelled."""
+        rows = self.signal_copy.db.execute(
+            "SELECT DISTINCT label FROM signals WHERE machine=? AND source='P01_LOG' AND kind='intent' "
+            "AND destination=? AND request IS NOT NULL AND label NOT IN ("
+            "SELECT label FROM signals WHERE machine=? AND source='P01_LOG' AND kind='cancelled' "
+            "AND destination=? AND request IS NOT NULL)", (machine, self.selected, machine, self.selected)).fetchall()
+        return [r['label'] for r in rows]
 
     def stop(self):
         with self.lifecycle:
