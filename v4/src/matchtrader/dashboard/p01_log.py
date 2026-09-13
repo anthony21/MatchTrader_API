@@ -68,8 +68,11 @@ class P01Log:
                 return
         except ValueError:
             return
-        match = re.search(r'P01RR_\d+_\d+', text)
-        label = match.group() if match else ''
+        # Chart-origin boxes are labelled P01RR_HHmmss_n; level-origin boxes on charts with a
+        # mint file are labelled L:<edge>@<wall>@<bar> (or M: for mirrored levels). Both are
+        # the tool's own lifecycle ids and both are joined to P01_STATE.json by exact equality.
+        match = re.search(r"id='([^']+)'", text) or re.search(r'P01RR_\d+_\d+|\b[LM]:(?:low|high|beyond)@\S+', text)
+        label = match.group(1) if match and match.lastindex else (match.group() if match else '')
         values = dict(re.findall(r'\b(side|entry|sl|tp|type)=([^\s]+)', text))
         if label:
             previous = self.labels.get(label, {})

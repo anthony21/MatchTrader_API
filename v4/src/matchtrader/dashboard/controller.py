@@ -526,7 +526,16 @@ class DashboardController:
     def _copy_p01_intents(self):
         rows = self.p01_log.drain_intents()
         config = self.signal_copy.config
-        if not config or not config.p01_log_enabled or not self.signal_copy.armed:
+        if not config or not config.p01_log_enabled:
+            return
+        # Arm exactly as receive_signals arms relay batches: saved settings plus running capture,
+        # under the shared Paper/Live master switch. The retired per-path "live signal copying"
+        # toggle no longer exists in the UI, so it must not gate this path either; and a P01
+        # intent copied from the log must never reach the broker while the master is on paper.
+        self.signal_copy.copy_mode = self.copy_controls.mode
+        self.signal_copy.armed = bool(config) and self.running
+        self.signal_copy.armed_at = self.copy_mode_since
+        if not self.signal_copy.armed:
             return
         recent = self.p01_log.feed()
         for row in rows:

@@ -54,6 +54,28 @@ def test_partial_lines_rotation_missing_file_and_bounded_memory(tmp_path):
     assert not log.poll()
 
 
+def test_level_origin_labels_from_the_v2_build_are_recognised_and_joined_to_state(tmp_path):
+    """BTCUSD boxes carry L:<edge>@<wall>@<bar> ids; they must reach the copier like P01RR_ ones."""
+    log = P01Log(tmp_path / 'P01_RR.log')
+    stamp = datetime.now(UTC).isoformat()
+    log.record(f"{stamp} box OPEN clicked id='L:low@0_1029@6016' side=0 type=Stop entry=77130.52 "
+               "sl=77092.59 tp=77168.45 panel=absent -> signal NOW")
+    log.record(f"{stamp} FIRE id='L:low@0_1029@6016' armed=False signalOnly=False")
+    log.record(f"{stamp} level available again: L:low@0_1029@6016 (trade ended)")
+    log.record(f"{stamp} signal band x L:low@0_1029@6016")
+    removed, released, fired, intent = log.feed()
+    assert intent['action'] == 'INTENT' and intent['trade_id'] == 'L:low@0_1029@6016'
+    assert intent['side'] == 'BUY' and intent['order_type'] == 'Stop' and intent['price'] == '77130.52'
+    assert fired['trade_id'] == released['trade_id'] == removed['trade_id'] == 'L:low@0_1029@6016'
+    assert (fired['action'], released['action'], removed['action']) == ('SIGNAL', 'RELEASE', 'REMOVE')
+    state = {'utc': stamp, 'action': 'open', 'label': 'L:low@0_1029@6016', 'side': 0,
+             'symbol': 'BTCUSD', 'entry': 77130.52, 'sl': 77092.59, 'tp': 77168.45, 'volume': 0}
+    (tmp_path / 'P01_STATE.json').write_text(json.dumps(state))
+    signal = log.signal(log.drain_intents()[0])
+    assert signal['label'] == 'L:low@0_1029@6016' and signal['copyOrderType'] == 'STOP'
+    assert signal['symbol'] == 'BTCUSD' and signal['side'] == 'BUY'
+
+
 def test_invalid_timestamp_is_not_an_event(tmp_path):
     log = P01Log(tmp_path / 'p01.log')
     log.record('not a timestamp')
@@ -93,7 +115,9 @@ def test_live_p01_route_uses_exact_state_fixed_lots_and_source_order_type(tmp_pa
     broker.connection = SimpleNamespace(account_id=controller.selected)
     controller.connection = 'connected'
     controller.api, controller.native.demo_verified = broker, False
-    controller.signal_copy.arm(True)
+    controller.running = True   # capture on: the P01 path arms from saved settings, like relay signals
+    from matchtrader.dashboard.copy_controls import CopyControls
+    controller.copy_controls = CopyControls(mode='live')
     stamp = datetime.now(UTC).isoformat()
     raw = f"{stamp} box OPEN clicked id='P01RR_1_1' side={side} type={order_type} entry=100 sl={sl} tp={tp}"
     state = {'utc': stamp, 'action': 'open', 'label': 'P01RR_1_1', 'side': side,
@@ -111,10 +135,45 @@ def test_live_p01_route_uses_exact_state_fixed_lots_and_source_order_type(tmp_pa
         log.record(raw.replace('P01RR_1_1', 'P01RR_1_2'))
         controller._copy_p01_intents()
         assert log.feed()[0]['copy_result']['status'] == 'held' and len(broker.calls) == 1
-        controller.signal_copy.arm(False)
+        controller.running = False   # capture stopped disarms the path; a later intent is not copied
         log.record(raw.replace('P01RR_1_1', 'P01RR_1_3'))
         controller._copy_p01_intents()
         assert len(broker.calls) == 1
+    finally:
+        controller.api = None
+        controller.close()
+
+
+def test_p01_log_copy_follows_the_shared_paper_switch_and_never_touches_the_broker_in_paper(tmp_path, settings):
+    import platform
+
+    from matchtrader.dashboard.controller import DashboardController
+    from matchtrader.dashboard.copy_controls import CopyControls
+    from tests.dashboard.test_signal_copy import Broker, config
+
+    controller = DashboardController(settings, tmp_path / 'data', interactive_copying=True)
+    log = controller.p01_log = P01Log(tmp_path / 'P01_RR.log')
+    broker = Broker()
+    route = config(machine_id=platform.node(), source='P01_LOG', p01_log_enabled=True,
+                   destination_account=controller.selected)
+    route['symbols']['US TECH 100']['order_type'] = 'SOURCE'
+    controller.signal_copy.configure(route)
+    from types import SimpleNamespace
+    broker.connection = SimpleNamespace(account_id=controller.selected)
+    controller.connection = 'connected'
+    controller.api, controller.native.demo_verified = broker, False
+    controller.running = True
+    controller.copy_controls = CopyControls(mode='paper')   # the master switch, as after every restart
+    stamp = datetime.now(UTC).isoformat()
+    state = {'utc': stamp, 'action': 'open', 'label': 'P01RR_9_9', 'side': 1,
+             'symbol': 'US TECH 100', 'entry': 100, 'sl': 105, 'tp': 95, 'volume': 0}
+    (tmp_path / 'P01_STATE.json').write_text(json.dumps(state))
+    try:
+        log.record(f"{stamp} box OPEN clicked id='P01RR_9_9' side=1 type=Limit entry=100 sl=105 tp=95")
+        controller._copy_p01_intents()
+        assert broker.calls == []
+        result = log.feed()[0]['copy_result']
+        assert result['status'] == 'paper' and result['copy_request']['type'] == 'LIMIT'
     finally:
         controller.api = None
         controller.close()
