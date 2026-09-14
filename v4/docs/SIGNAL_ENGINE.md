@@ -33,8 +33,9 @@ A plain table keyed by the incoming symbol: destination symbol, lots, order hand
 (`SOURCE`, `ENTRY`, `MARKET`, `LIMIT`, `STOP`). Stored in `data/dashboard/relay/symbol-map.json`,
 separate from the lane settings, so it is looked up rather than re-declared, and can later be
 replaced from an external source. Routes: `GET /api/symbol-map`, `POST /api/symbol-map`
-(full replacement). The Strategy signal mapping form still posts symbols with the lane; the
-server splits them into the map.
+(full replacement). The dashboard's **Symbol map** page edits this table on its own; the
+Strategy signal lane form on Copy settings no longer carries symbols. Settings files saved
+before the split still load: their symbols are moved into the map on first start.
 
 ## Lane settings (`SignalSettings` in `dashboard/signal_copy.py`)
 

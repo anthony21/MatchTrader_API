@@ -15,13 +15,15 @@ import BrokerProfiles from './components/BrokerProfiles.vue'
 import CopyControls from './components/CopyControls.vue'
 import VerifiedTrades from './components/VerifiedTrades.vue'
 import PaperTrades from './components/PaperTrades.vue'
+import SymbolMap from './components/SymbolMap.vue'
 
-const PAGES = ['bridge', 'orders', 'verified', 'paper', 'brokers', 'logging', 'raw', 'settings']
+const PAGES = ['bridge', 'orders', 'verified', 'paper', 'brokers', 'logging', 'raw', 'settings', 'symbols']
 // Pages that carry the service status grid and token panel above their workspace.
 const OVERVIEW_PAGES = ['bridge', 'settings']
 const TITLES = { bridge: 'Trading bridge', orders: 'Orders & positions', verified: 'Verified trades', paper: 'Paper trades',
-  brokers: 'Broker accounts', logging: 'Event logging', raw: 'Raw events', settings: 'Copy settings' }
+  brokers: 'Broker accounts', logging: 'Event logging', raw: 'Raw events', settings: 'Copy settings', symbols: 'Symbol map' }
 const DESCRIPTIONS = {
+  symbols: 'Quantower symbol to AquaFunded instrument, lot size and order handling. Looked up by the signal engine for every intent.',
   orders: 'Positions, pending orders and copy activity — organized by trade.',
   raw: 'Inspect recorded requests and replies.',
   verified: 'What the broker read back for each copied trade, on its own clock, beside what was sent on this one.',
@@ -149,6 +151,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <button class="nav-item" :class="{ active: page === 'logging' }" @click="openPage('logging')">Event logging</button>
       <button class="nav-item" :class="{ active: page === 'raw' }" @click="openPage('raw')">Raw events</button>
       <button class="nav-item" :class="{ active: page === 'settings' }" @click="openPage('settings')">Copy settings</button>
+      <button class="nav-item" :class="{ active: page === 'symbols' }" @click="openPage('symbols')">Symbol map</button>
       <div class="sidebar-bottom"><span class="small-dot"></span> Local application<br><small>Match-Trader integration</small></div>
     </aside>
     <main>
@@ -191,8 +194,9 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <template v-else-if="page === 'settings'">
         <CopyControls :pushed="copyControls" />
         <CopySettings :state="state" />
-        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal mapping</summary><SignalCopySettings :state="state" /></details>
+        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" /></details>
       </template>
+      <SymbolMap v-else-if="page === 'symbols'" :state="state" />
       <template v-else>
       <OrdersWorkspace :state="state" :mappings="mappings" :busy="busy" @refresh="refreshBroker" />
       </template>
