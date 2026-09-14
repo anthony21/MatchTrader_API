@@ -5,6 +5,25 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## 5.1.0 - the R01 lane
+
+A second signal lane copies R01 ledger intents automatically: its own settings and
+record (`GET`/`POST /api/r01-lane`, `GET /api/r01-events`), fed from the ledger rows the
+capture worker already tails, deciding through the same engine and dispatcher as the
+P01 log lane. Because R01 reuses labels across re-mints and instances, the lane tracks
+an episode per label: duplicates are ignored, a re-priced re-mint cancels the previous
+copy and opens the new one, cancelled and modified rows act on the current episode,
+and a regrade below the accepted grades retracts it. Lane settings add
+`accepted_grades`, `retract_on_downgrade` and `risk_usd`; the engine sizes lots from
+the dollar risk, the stop distance and the broker's contract size, and refuses a
+resting order whose level is already through a fresh destination quote. The dashboard
+gains an R01 lane form on Copy settings and an R01 activity feed on Raw events.
+
+Broker accounts: the five-second background read no longer locks or relabels the
+buttons and the shell's own broker poll stands down while that page is open; profile
+reads and a fresh account selection no longer wait behind the capture worker's broker
+calls.
+
 ## 5.0.0 - the signal engine
 
 The path from an incoming trade signal to the broker is now three steps: the signal

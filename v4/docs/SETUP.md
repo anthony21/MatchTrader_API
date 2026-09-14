@@ -1,6 +1,6 @@
 # Install and run v4
 
-## Current release 5.0.0
+## Current release 5.1.0
 
 Release 5.0.0 sends every trade signal through one engine: typed shapes per source,
 a standalone symbol map with its own page (`Symbol map`) and route, one decision, one
@@ -8,7 +8,7 @@ dispatcher. The P01 log path copies and cancels boxes on its own; see
 [the signal engine](SIGNAL_ENGINE.md). Nothing on disk migrates in 5.0.0: the mapping
 journal stays at schema 1.1.0, and signal settings saved by 1.0.0 load unchanged with
 their symbols moved into `symbol-map.json`. The version check at the end of this guide
-should show 5.0.0 for the current checkout. The environment prefix is `AQF_`; where this
+should show 5.1.0 for the current checkout. The environment prefix is `AQF_`; where this
 guide still says `MTR_`, read `AQF_`.
 
 ## Release 1.0.0

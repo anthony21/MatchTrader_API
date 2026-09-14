@@ -1,6 +1,6 @@
 # Match-Trader versions
 
-Current release: **5.0.0**. **[Complete installation and operating instructions](v4/docs/SETUP.md)**
+Current release: **5.1.0**. **[Complete installation and operating instructions](v4/docs/SETUP.md)**
 cover installation, X17/TradingBox forwarding, five separate broker profiles,
 logging, troubleshooting and validation. The separate `x.0.1` workspace is excluded
 from Git and the v4 source handoff.

@@ -2,8 +2,8 @@
 
 # Match-Trader Python client
 
-Current release: **5.0.0**: one signal engine for every source, a standalone symbol map, and
-P01 boxes copied and cancelled from the local log. See [the signal engine](docs/SIGNAL_ENGINE.md).
+Current release: **5.1.0**: R01 ledger intents copied automatically on their own lane, one signal engine
+for every source, a standalone symbol map, and P01 boxes copied and cancelled from the local log. See [the signal engine](docs/SIGNAL_ENGINE.md).
 Use **Choose broker login** to select a named .env profile,
 log in, then choose one of its returned trading accounts. See [broker login setup](docs/BROKER_PROFILES.md).
 The **Verified trades** page records the broker's own read-back as the only proof that a

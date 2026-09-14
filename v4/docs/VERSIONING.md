@@ -1,4 +1,4 @@
-# Current release: 5.0.0 (workspace v4)
+# Current release: 5.1.0 (workspace v4)
 
 Use semantic `major.minor.patch` releases from this point onward. Breaking contracts
 increment major; compatible features increment minor; compatible fixes increment patch.
@@ -11,6 +11,18 @@ Python/frontend package versions and `matchtrader.version.VERSION` must agree.
 See [the changelog](CHANGELOG.md) for readable release summaries and the Git tag
 policy. The first tagged release is 0.6.0; earlier entries below are local
 development milestones included in that release, not separately published tags.
+
+## 5.1.0 - the R01 lane
+
+R01 ledger intents are copied automatically through the same engine as P01 boxes, on
+their own lane with their own routes, sharing only the symbol map and the Paper/Live
+master switch. Episodes pair R01's re-mints and cancels; accepted grades gate opening;
+a dollar risk per trade sizes lots from the stop distance and the broker's contract
+size; and every lane refuses a resting order whose level is already through a fresh
+destination quote. Proven on the wire on 2026-09-14: each R01 re-mint placed and
+cancelled at AquaFunded within a second of the ledger row. Broker accounts page
+background reads no longer lock the buttons, and profile reads leave the controller
+lock. No schema changes.
 
 ## 5.0.0 - the signal engine
 
