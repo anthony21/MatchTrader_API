@@ -113,6 +113,32 @@ def test_grades_gate_intents_and_a_downgrade_retracts_a_resting_copy(tmp_path, s
         controller.close()
 
 
+def test_the_capture_worker_path_decides_every_ledger_row_with_an_account_selected(tmp_path, settings):
+    """The worker hands rows to the shadow journal when an account is selected; the lane must
+    still decide each one, and the journal row must carry the decision."""
+    broker = PendingBroker()
+    controller = r01_controller(tmp_path, settings, broker, 'paper')
+    try:
+        assert controller.bridge is not None                       # an account is selected
+        observed = []
+        controller.bridge.journal.observe = lambda received, path, offset, payload: observed.append(payload)
+        payload = {'record': row('intent', 'R01_US 500_long_0_514_0_459', side='long', entry='7539.45',
+                                 sl='7527.94375', tp='7562.4625'), 'extra_fields': ['r4:b7|PRIME|'],
+                   'classification': 'ledger_observation_only', 'execution_status': 'not_submitted',
+                   'reason': 'ledger_has_no_volume_or_verified_outbound_order_contract'}
+        controller._observe_ledger_row('ledger.csv', 4321, payload)
+        assert observed and observed[0]['lane']['status'] == 'paper' and 'R01 lane: Paper' in observed[0]['reason']
+        assert controller.r01_copy.feed()['events'][0]['copy_request']['instrument'] == 'NAS100'
+        assert broker.calls == []
+        # Without an account the observation lands in the in-memory feed with the same decision.
+        controller.bridge = None
+        controller._observe_ledger_row('ledger.csv', 4322, {**payload, 'record': row('cancelled', 'R01_US 500_long_0_514_0_459')})
+        assert controller.source_signal_feed()[-1]['copy_result']['kind'] == 'cancelled'
+    finally:
+        controller.api = None
+        controller.close()
+
+
 def test_the_r01_lane_has_its_own_settings_and_refuses_other_sources(tmp_path, settings):
     controller = DashboardController(settings, tmp_path / 'data', interactive_copying=True)
     try:

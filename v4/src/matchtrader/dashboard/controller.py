@@ -489,28 +489,7 @@ class DashboardController:
                         self._unwind_p01_releases()
                         self.native_store.notify_stream()
                     for offset, payload in tail.poll() if tail else ():
-                        if self.bridge:
-                            self.bridge.journal.observe(
-                                datetime.now(UTC).isoformat(), str(tail.path), offset, payload
-                            )
-                        else:
-                            row = payload['record']
-                            entry = {
-                                'id': f'csv:{offset}', 'trade_id': row.get('label'), 'symbol': row.get('symbol'),
-                                'side': row.get('side'), 'kind': row.get('kind'), 'action': 'OBSERVE',
-                                'price': row.get('entry'), 'sl': row.get('sl'), 'tp': row.get('tp'),
-                                'grade': row.get('grade'), 'stamp': row.get('stamp'),
-                                'emitted_at': row.get('utc'), 'received_at': datetime.now(UTC).isoformat(),
-                                'decision': 'observation', 'reason': 'R01 source ledger observation',
-                                'meaning': {'source': {'code': 'R01', 'label': 'R01'},
-                                            'opened': {'state': 'unconfirmed', 'label': 'Source report'}},
-                            }
-                            decision = self._copy_r01_row(row, payload.get('extra_fields') or [])
-                            if decision:
-                                entry['copy_result'] = decision
-                                entry['reason'] += ' | R01 lane: ' + str(decision.get('reason', ''))[:160]
-                            self.source_signals.append(entry)
-                            self.native_store.notify_stream()
+                        self._observe_ledger_row(str(tail.path), offset, payload)
                     if self.api and self.native.route and monotonic() >= next_reconcile:
                         next_reconcile = monotonic() + 15
                         try:
@@ -535,6 +514,33 @@ class DashboardController:
         finally:
             if tail:
                 tail.close()
+
+    def _observe_ledger_row(self, path, offset, payload):
+        """One fresh R01 ledger row: the R01 lane decides on it first, whatever journal then
+        records the observation. With an account selected the observation goes to the shadow
+        journal (the bridge page's LEDGER rows); without one it goes to the in-memory feed."""
+        row = payload['record']
+        decision = self._copy_r01_row(row, payload.get('extra_fields') or [])
+        if decision:
+            payload = {**payload, 'lane': decision,
+                       'reason': f"{payload.get('reason', '')} | R01 lane: {str(decision.get('reason', ''))[:160]}"}
+        if self.bridge:
+            self.bridge.journal.observe(datetime.now(UTC).isoformat(), path, offset, payload)
+        else:
+            entry = {
+                'id': f'csv:{offset}', 'trade_id': row.get('label'), 'symbol': row.get('symbol'),
+                'side': row.get('side'), 'kind': row.get('kind'), 'action': 'OBSERVE',
+                'price': row.get('entry'), 'sl': row.get('sl'), 'tp': row.get('tp'),
+                'grade': row.get('grade'), 'stamp': row.get('stamp'),
+                'emitted_at': row.get('utc'), 'received_at': datetime.now(UTC).isoformat(),
+                'decision': 'observation', 'reason': payload.get('reason') or 'R01 source ledger observation',
+                'meaning': {'source': {'code': 'R01', 'label': 'R01'},
+                            'opened': {'state': 'unconfirmed', 'label': 'Source report'}},
+            }
+            if decision:
+                entry['copy_result'] = decision
+            self.source_signals.append(entry)
+        self.native_store.notify_stream()
 
     def _copy_p01_intents(self):
         rows = self.p01_log.drain_intents()
