@@ -1,4 +1,4 @@
-# Current release: 1.0.0 (workspace v4)
+# Current release: 5.0.0 (workspace v4)
 
 Use semantic `major.minor.patch` releases from this point onward. Breaking contracts
 increment major; compatible features increment minor; compatible fixes increment patch.
@@ -11,6 +11,19 @@ Python/frontend package versions and `matchtrader.version.VERSION` must agree.
 See [the changelog](CHANGELOG.md) for readable release summaries and the Git tag
 policy. The first tagged release is 0.6.0; earlier entries below are local
 development milestones included in that release, not separately published tags.
+
+## 5.0.0 - the signal engine
+
+How a manual trade is sent changed shape, and the major version marks it. Every
+intent, from the P01 log, the X17 relay or R01, is parsed into a typed shape on one
+shared base, decided once by `SignalEngine`, and sent by `BrokerDispatcher`; the
+symbol map is a standalone table with its own page and route. The P01 log path now
+arms from saved settings and follows the Paper/Live master switch, recognises both
+P01 label shapes, and cancels the live copy when the box is released. Paper
+stop-limit execution of R01 ledger intents is available as a separate runner. Event
+schema stays 1.1.0 and the mapping journal schema stays 1.1.0; nothing on disk
+migrates. Saved signal settings from 1.0.0 load unchanged and their symbols move
+into the map. See SIGNAL_ENGINE.md.
 
 ## 1.0.0 - verified-trade ledger and copy controls
 

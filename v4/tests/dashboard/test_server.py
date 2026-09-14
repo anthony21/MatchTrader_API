@@ -151,7 +151,7 @@ def test_event_meanings_catalog_requires_authentication(server):
     status, raw = call(server, '/api/event-meanings', headers={'X-Session-Token': 'test-session'})
     assert status == 200
     result = json.loads(raw)
-    assert result['version'] == '1.0.0'
+    assert result['version'] == '1.0.0'   # the event-meaning catalog's own version, not the release
     assert result['sources']['R01'] == 'R01 strategy'
     assert {'POSITION', 'FILL', 'LEDGER'} <= {item['code'] for item in result['events']}
 

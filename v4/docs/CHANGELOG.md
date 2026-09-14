@@ -5,6 +5,28 @@ Breaking contracts increment major, compatible features increment minor, and
 compatible fixes increment patch. Each new release receives an annotated Git tag
 matching the Python and frontend package version.
 
+## 5.0.0 - the signal engine
+
+The path from an incoming trade signal to the broker is now three steps: the signal
+is parsed into a typed shape (`P01Signal`, `ChainSignal`, `R01Signal` on one
+`BaseSignal`), `SignalEngine.decide()` runs every check in one place and returns the
+exact broker request, and `BrokerDispatcher.send()` performs the call. The symbol
+map (Quantower symbol to AquaFunded instrument, lots, order handling) is its own
+table, `symbol-map.json`, with a Symbol map page and `GET`/`POST /api/symbol-map`;
+the Strategy signal lane form carries machine, source, destination and attribution
+only. See docs/SIGNAL_ENGINE.md.
+
+P01 log copying was left behind by 1.0.0 and could not arm from the UI; it now arms
+from saved settings plus running capture and follows the shared Paper/Live switch.
+Both P01 label shapes (`P01RR_HHmmss_n` and `L:<edge>@<wall>@<bar>`) are recognised.
+Releasing a box or pressing Close/Cancel All in P01 cancels the live copy at the
+broker through the existing unwind, at most once; a paper-only copy has nothing to
+cancel, and a live copy is still cancelled after the master returns to paper.
+
+`matchtrader.orders.paper_stop_limit` paper-trades R01 ledger intents as resting
+LIMITs and emulated STOP_LIMITs against live destination quotes with risk-based
+sizing and its own expiry rules; writes are structurally disabled.
+
 ## Unreleased - direct bridge orders
 
 Live now sends each fresh, matching bridge order through the connected broker's order
