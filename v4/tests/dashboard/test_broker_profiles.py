@@ -69,18 +69,40 @@ def test_simultaneous_brokers_with_same_ids_remain_isolated(settings):
     profiles.close()
 
 
-def test_primary_reuses_existing_owner_and_blocks_account_mismatch(settings):
-    primary = SimpleNamespace(lock=RLock(), selected='other', connection='connected', api=None)
-    profiles = BrokerProfiles({'AQF': settings}, primary)
-    result = profiles.snapshot()['profiles'][0]
-    assert result['connection'] == 'unavailable'
-    profiles.action('AQF', 'refresh')
-    assert 'balance' not in profiles.snapshot()['profiles'][0]
-    with pytest.raises(ValueError):
-        profiles.action('missing', 'connect')
-    with pytest.raises(ValueError):
-        profiles.action('AQF', 'trade')
-    profiles.close()
+def test_primary_mirrors_the_workspace_account_and_reads_with_the_saved_token(settings):
+    # The primary (AQF) has a blank AQF_ACCOUNT_ID; its account is whatever the workspace is on.
+    calls = {'login': 0, 'balance': 0}
+
+    class Api:
+        connection = SimpleNamespace(account_id='265015', session_expires_at=None)
+        def login(self): calls.__setitem__('login', calls['login'] + 1)
+        def balance(self):
+            calls['balance'] += 1
+            return Balance(balance='777', equity='777', currency='USD')
+        def active_orders(self): return []
+        def open_positions(self): return []
+    primary = SimpleNamespace(lock=RLock(), selected='265015', connection='connected', api=Api())
+    profiles = BrokerProfiles({'AQF': settings.model_copy(update={'account_id': ''})}, primary)
+    try:
+        row = profiles.snapshot()['profiles'][0]
+        assert row['connection'] == 'connected' and row['account_id'] == '265015'   # follows the workspace, not blank
+        assert 'different account' not in (row.get('error') or '')
+        profiles.action('AQF', 'refresh')
+        row = profiles.snapshot()['profiles'][0]
+        assert row['account_id'] == '265015' and row['balance']['balance'] == '777'
+        assert calls['login'] == 0                                                  # reused the saved token, no login
+        profiles.action('AQF', 'balance')
+        assert calls == {'login': 0, 'balance': 2}
+        with pytest.raises(ValueError):
+            profiles.action('missing', 'connect')
+        with pytest.raises(ValueError):
+            profiles.action('AQF', 'trade')
+        # With nothing connected on the workspace, a read errors cleanly rather than raising upward.
+        primary.api, primary.selected = None, ''
+        profiles.action('AQF', 'refresh')
+        assert 'balance' not in profiles.snapshot()['profiles'][0]
+    finally:
+        profiles.close()
 
 
 def test_granular_reads_refresh_one_slice_with_the_saved_token_and_never_re_login(settings):

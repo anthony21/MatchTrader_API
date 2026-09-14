@@ -88,15 +88,18 @@ class BrokerProfiles:
                 expiry = login_expiry(entry['authentication']) if entry['authentication'] else None
                 state, error = entry['state'], entry['error']
                 api = entry['api']
+                account_id = settings.account_id
                 if name == PRIMARY_PREFIX:
+                    # The primary profile mirrors the account the capture workspace is connected to,
+                    # read with that connection's saved token. Its account follows the live selection
+                    # rather than a static AQF_ACCOUNT_ID, so it is never "a different account".
                     with self.primary.lock:
                         api = self.primary.api
                         state = self.primary.connection
-                        if self.primary.selected != settings.account_id:
-                            state, error = 'unavailable', 'Primary workspace selected a different account'
+                        account_id = self.primary.selected or settings.account_id
                         if state != 'connected':
                             entry['data'] = {}
-                if not settings.account_id and not entry['accounts']:
+                if not account_id and not entry['accounts']:
                     state, error = 'configuration required', error or 'Log in above to discover available trading accounts'
                 # An active account session can outlive the discovery login token.
                 session_expiry = getattr(api.connection, 'session_expires_at', None) if api and state == 'connected' else None
@@ -108,7 +111,7 @@ class BrokerProfiles:
                     except (TypeError, ValueError):
                         pass
                 result.append({'profile': name, 'label': self.names.get(name) or name,
-                               'broker': settings.platform_url, 'account_id': settings.account_id,
+                               'broker': settings.platform_url, 'account_id': account_id,
                                'accounts': list(entry['accounts']) if login_status != 'expired' else [],
                                'login_status': login_status, 'login_expires_at': expiry.isoformat() if expiry else None,
                                'session_expires_at': (getattr(api.connection, 'session_expires_at', None)
@@ -204,28 +207,29 @@ class BrokerProfiles:
             raise ValueError('Unknown profile action')
         with entry['lock']:
             settings = entry['settings']
-            if not settings.account_id and action != 'disconnect':
+            # The primary account is whatever the capture workspace is connected to, not a static
+            # AQF_ACCOUNT_ID; the other profiles carry their own configured account.
+            primary = name == PRIMARY_PREFIX
+            if not primary and not settings.account_id and action != 'disconnect':
                 raise ValueError(f'Set {name}_ACCOUNT_ID in .env')
             try:
                 if action == 'disconnect':
-                    if name == PRIMARY_PREFIX:
+                    if primary:
                         self.primary.stop()
                     elif entry['api']:
                         entry['api'].close()
                     entry.update(api=None, state='disconnected', data={}, error='', accounts=[], authentication=None)
                 else:
                     parts = PARTS[action]
-                    if name == PRIMARY_PREFIX:
-                        if self.primary.selected != settings.account_id:
-                            raise ValueError('Primary account changed')
-                        if action == 'connect' and self.primary.api is None:
-                            self.primary.connect(settings.account_id)
-                        # Take the owner under the controller lock, read the broker outside it: a
-                        # refresh or a fresh selection must never queue behind the capture worker's
-                        # own broker calls. The REST connection serialises its own requests.
+                    if primary:
+                        # Read the account the workspace is on, with its saved token. Take the owner
+                        # under the controller lock, read outside it so a refresh never queues behind
+                        # the capture worker's own broker calls.
                         with self.primary.lock:
-                            api = self.primary.api
-                        self._read(entry, api, settings.account_id, parts)
+                            api, selected = self.primary.api, self.primary.selected
+                        if api is None or not selected:
+                            raise ValueError('Connect an account on the Trading bridge first')
+                        self._read(entry, api, selected, parts)
                     else:
                         if action == 'connect' and entry['api'] is None:
                             api = self.factory(settings)
