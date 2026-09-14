@@ -59,6 +59,22 @@ test('the R01 lane posts to its own route with source fixed, grades and dollar r
   wrapper.unmount()
 })
 
+test('the destination dropdown lists connected accounts as broker · account and saves the chosen id', async () => {
+  request.mockReset()
+  request.mockImplementation(async (path, body) => body ?? { config: null, live: false })
+  const destinations = [{ id: '275018', profile: 'AQF', broker: 'AquaFunded' }, { id: '647436', profile: 'GTR', broker: 'GooeyTrade' }]
+  const wrapper = mount(SignalCopySettings, { props: { state: { p01_log: { machine: 'qt' } }, endpoint: 'r01-lane', title: 'R01 lane', r01: true, destinations } })
+  await flushPromises()
+  const select = wrapper.findAll('select').find(s => s.findAll('option').some(o => o.text().includes('·')))
+  const labels = select.findAll('option').map(o => o.text())
+  expect(labels).toContain('AquaFunded · 275018')
+  expect(labels).toContain('GooeyTrade · 647436')
+  await select.setValue('647436')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(request).toHaveBeenLastCalledWith('r01-lane', expect.objectContaining({ destination_account: '647436' }))
+  wrapper.unmount()
+})
+
 test('X17 and manual P01 preset selects chain plus panel without arming; unwinding is not a switch', async () => {
   request.mockReset()
   request.mockResolvedValue({ config: null, live: false })

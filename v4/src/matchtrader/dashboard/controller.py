@@ -395,6 +395,36 @@ class DashboardController:
     def _destination_verified(self):
         return self.connection == 'connected' and self.api is not None and self.api.connection.account_id == self.selected
 
+    def _session_for(self, account_id):
+        """The authenticated session that serves a destination account, across every connected
+        profile. Accounts are their own entities: a lane couples to whichever session serves its
+        chosen account, not to the capture account. References are read without taking the
+        profile locks (a nested lock here would invert the order broker-profile actions use and
+        could deadlock); the engine re-checks the account and the token before it writes."""
+        if not account_id:
+            return None
+        api = self.api
+        if api is not None and self.connection == 'connected' and getattr(api.connection, 'account_id', None) == account_id:
+            return api
+        profiles = self.broker_profiles
+        if profiles:
+            for name, entry in profiles.entries.items():
+                if name == PRIMARY_PREFIX:
+                    continue  # the primary profile is the capture session, already checked
+                candidate = entry.get('api')
+                if (candidate is not None and entry.get('state') == 'connected'
+                        and getattr(candidate.connection, 'account_id', None) == account_id):
+                    return candidate
+        return None
+
+    def _lane_target(self, lane):
+        """The (api, destination account, verified) a lane dispatches through: its configured
+        destination resolved to that account's own session. verified is true only when a live
+        session serves the account; otherwise a live send is refused and paper still previews."""
+        dest = lane.config.destination_account if lane.config else ''
+        api = self._session_for(dest)
+        return api, dest, api is not None
+
     def receive_signals(self, payload):
         with self.lock:
             self.signal_copy.copy_mode = self.copy_controls.mode
@@ -628,7 +658,7 @@ class DashboardController:
         self.signal_copy.copy_mode = self.copy_controls.mode
         machine = platform.node()
         for row in rows:
-            labels = [row['trade_id']] if row['trade_id'] else self._p01_labels_with_live_copies(machine)
+            labels = [row['trade_id']] if row['trade_id'] else self._p01_labels_with_live_copies(machine, self.selected)
             outcomes = []
             for label in labels:
                 sent = self.signal_copy.db.execute(
@@ -727,7 +757,8 @@ class DashboardController:
             else:
                 return {'status': 'observed', 'reason': f'regrade to {grade}; copy unchanged'}
         try:
-            results = lane.receive(signals, self.api, self.selected, self._destination_verified())['results']
+            api, destination, verified = self._lane_target(lane)
+            results = lane.receive(signals, api, destination, verified)['results']
         except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as error:
             return {'status': 'uncertain', 'reason': f'R01 lane processing failed ({type(error).__name__})'}
         return results[-1] if len(results) == 1 else {
@@ -745,13 +776,13 @@ class DashboardController:
                 raise ValueError('The R01 lane accepts no P01 or panel sources')
             return self.r01_copy.configure({**payload, 'source': 'R01', 'symbols': {}})
 
-    def _p01_labels_with_live_copies(self, machine):
-        """Labels of P01 log intents this owner sent to the selected account and has not yet cancelled."""
+    def _p01_labels_with_live_copies(self, machine, destination):
+        """Labels of P01 log intents this owner sent to the lane's destination account and has not yet cancelled."""
         rows = self.signal_copy.db.execute(
             "SELECT DISTINCT label FROM signals WHERE machine=? AND source='P01_LOG' AND kind='intent' "
             "AND destination=? AND request IS NOT NULL AND label NOT IN ("
             "SELECT label FROM signals WHERE machine=? AND source='P01_LOG' AND kind='cancelled' "
-            "AND destination=? AND request IS NOT NULL)", (machine, self.selected, machine, self.selected)).fetchall()
+            "AND destination=? AND request IS NOT NULL)", (machine, destination, machine, destination)).fetchall()
         return [r['label'] for r in rows]
 
     def stop(self):

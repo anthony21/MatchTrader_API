@@ -41,6 +41,16 @@ const verifiedTrades = ref([])
 const paperSends = ref([])
 const copyMode = computed(() => copyControls.value?.mode === 'live' ? 'live' : 'paper')
 const copyLive = computed(() => copyMode.value === 'live')
+// Copy destinations are the accounts currently connected on the Broker accounts page, across
+// every logged-in profile. A lane couples to whichever account is chosen; the backend routes
+// through that account's own session. Grouped for display as broker -> account.
+const destinations = computed(() => (brokerProfiles.value?.profiles || [])
+  .filter(p => p.connection === 'connected' && p.account_id)
+  .map(p => ({ id: p.account_id, profile: p.profile, broker: p.label || p.profile })))
+// The X17/P01 lane's cancels unwind against the capture ledger, so for now it can only target
+// the account connected for capture. The R01 lane is isolated and can target any connected account.
+const captureDestination = computed(() => (state.value.account_id && state.value.connection === 'connected')
+  ? [{ id: state.value.account_id, profile: 'capture', broker: 'Capture account' }] : [])
 // The two header pills toggle TradingBox forwarding and the copy mode. TradingBox "on"
 // means enabled and live together (the same definition the Forwarding switch uses); turning
 // it on needs a destination URL and a configured key. The copy pill flips paper/live and is
@@ -224,8 +234,8 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       </template>
       <template v-else-if="page === 'settings'">
         <CopySettings :state="state" />
-        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" /></details>
-        <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" endpoint="r01-lane" title="R01 lane" r01 /></details>
+        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" :destinations="captureDestination" /></details>
+        <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" :destinations="destinations" endpoint="r01-lane" title="R01 lane" r01 /></details>
       </template>
       <SymbolMap v-else-if="page === 'symbols'" :state="state" />
       <template v-else>

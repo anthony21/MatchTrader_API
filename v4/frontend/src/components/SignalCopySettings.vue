@@ -4,7 +4,8 @@ import { request } from '../api.js'
 // One form serves both lanes. The P01/X17 lane posts to signal-copy-settings; the R01 lane
 // posts to r01-lane, has its source fixed to R01, and adds grade gating and dollar risk.
 const props = defineProps({ state: Object, endpoint: { type: String, default: 'signal-copy-settings' },
-  title: { type: String, default: 'Strategy signal lane' }, r01: { type: Boolean, default: false } })
+  title: { type: String, default: 'Strategy signal lane' }, r01: { type: Boolean, default: false },
+  destinations: { type: Array, default: () => [] } })
 const emit = defineEmits(['saved'])
 const GRADES = ['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']
 // The lane: which machine and source, to which account, and how attribution is proven.
@@ -79,7 +80,10 @@ async function save() {
           <label>Signal machine ID<input v-model="config.machine_id" required placeholder="machineId from the request" /></label>
           <label>Signal source<input v-model="config.source" :readonly="r01" required /></label>
           <label v-if="!r01">Chart connection name (optional)<input v-model="config.connection_name" placeholder="For example, Time - 15s" /></label>
-          <label>MatchTrader destination<select v-model="config.destination_account" required><option value="">Select an account</option><option v-for="account in state?.accounts || []" :key="account.id" :value="account.id">{{ account.id }}</option></select></label>
+          <label>MatchTrader destination<select v-model="config.destination_account" required><option value="">Select an account</option>
+            <option v-for="account in destinations" :key="`${account.profile}:${account.id}`" :value="account.id">{{ account.broker }} · {{ account.id }}</option>
+            <option v-if="config.destination_account && !destinations.some(a => a.id === config.destination_account)" :value="config.destination_account">{{ config.destination_account }} (not connected)</option>
+          </select></label>
         </div>
         <template v-if="r01">
           <legend>Grades and risk</legend>

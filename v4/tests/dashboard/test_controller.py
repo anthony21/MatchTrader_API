@@ -387,3 +387,53 @@ def test_signal_arming_requires_connected_destination_and_stop_disarms(settings,
         assert controller.signal_copy.armed is False
     finally:
         controller.close()
+
+
+def test_session_for_resolves_a_destination_across_connected_profiles(settings, tmp_path):
+    from matchtrader.core.settings import PRIMARY_PREFIX
+    controller = DashboardController(settings, tmp_path, interactive_copying=True)
+    try:
+        gtr = SimpleNamespace(connection=SimpleNamespace(account_id='999'))
+        controller.broker_profiles = SimpleNamespace(close=lambda: None, entries={
+            PRIMARY_PREFIX: {'api': None, 'state': 'disconnected'},
+            'GTR': {'api': gtr, 'state': 'connected'},
+        })
+        # The account is discovered from a connected profile session, not the capture account.
+        assert controller._session_for('999') is gtr
+        assert controller._session_for('123') is None
+        assert controller._session_for('') is None
+        # A profile that is not connected does not serve its account.
+        controller.broker_profiles.entries['GTR']['state'] = 'disconnected'
+        assert controller._session_for('999') is None
+    finally:
+        controller.close()
+
+
+def test_r01_lane_dispatches_through_the_chosen_profile_not_the_capture_account(settings, tmp_path):
+    import platform
+
+    from matchtrader.core.settings import PRIMARY_PREFIX
+    from matchtrader.dashboard.copy_controls import CopyControls
+    from tests.dashboard.test_r01_lane import row
+    from tests.dashboard.test_signal_copy import PendingBroker
+    controller = DashboardController(settings, tmp_path / 'data', interactive_copying=True)
+    try:
+        controller.signal_copy.configure_symbols({'BTCUSD': {'destination': 'NAS100', 'lots': '0.2', 'order_type': 'SOURCE'}})
+        # Capture is connected to account 123; the R01 lane targets account 999 on another profile.
+        capture = PendingBroker()
+        capture.connection = SimpleNamespace(account_id=controller.selected)
+        capture.close = lambda: None
+        controller.api, controller.connection, controller.running = capture, 'connected', True
+        gtr = PendingBroker()
+        gtr.connection = SimpleNamespace(account_id='999')
+        controller.broker_profiles = SimpleNamespace(close=lambda: None, entries={
+            PRIMARY_PREFIX: {'api': capture, 'state': 'connected'},
+            'GTR': {'api': gtr, 'state': 'connected'},
+        })
+        controller.configure_r01({'machine_id': platform.node(), 'destination_account': '999', 'exclusive_destination': True})
+        controller.copy_controls = CopyControls(mode='live')
+        result = controller._copy_r01_row(row('intent', 'RANGE-1'), [])
+        assert result['status'] == 'accepted'
+        assert gtr.calls and not capture.calls   # routed to the coupled account's own session
+    finally:
+        controller.close()
