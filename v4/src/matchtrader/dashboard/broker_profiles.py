@@ -27,8 +27,11 @@ def load_profiles(path):
         fields = {name: values[prefix + '_' + name.upper()] for name in Settings.model_fields
                   if values.get(prefix + '_' + name.upper()) not in (None, '')}
         fields['enable_writes'] = False
+        # An account id is known only from the login response, never from .env: a profile always
+        # starts unselected and gets its account from discovery + selection.
+        fields.pop('account_id', None)
         settings = Settings(**fields)
-        identity = (settings.platform_url, settings.broker_id, settings.email.casefold(), settings.account_id)
+        identity = (settings.platform_url, settings.broker_id, settings.email.casefold())
         if identity in identities:
             raise ValueError('Duplicate broker/login/account profile')
         identities.add(identity)
@@ -211,7 +214,7 @@ class BrokerProfiles:
             # AQF_ACCOUNT_ID; the other profiles carry their own configured account.
             primary = name == PRIMARY_PREFIX
             if not primary and not settings.account_id and action != 'disconnect':
-                raise ValueError(f'Set {name}_ACCOUNT_ID in .env')
+                raise ValueError('Log in and select an account for this profile first')
             try:
                 if action == 'disconnect':
                     if primary:

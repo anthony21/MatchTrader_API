@@ -50,12 +50,13 @@ def main(argv=None):
     if ws_port and not token and args.ws_port is not None:
         parser.error('WebSocket capture requires AQF_BRIDGE_TOKEN')
     ledger = env.get("AQF_R01_LEDGER")
-    accounts = [x.strip() for x in (env.get("AQF_ACCOUNT_IDS", "") or "").split(",") if x.strip()]
+    # Account ids are known only from the broker login response, never from .env: start with
+    # none configured and clear any env account id, so every account comes from login + selection.
     profile_settings = load_profiles(args.env)
     controller = DashboardController(
-        Settings.from_env(args.env),
+        Settings.from_env(args.env).model_copy(update={"account_id": ""}),
         args.data,
-        accounts=accounts,
+        accounts=[],
         ledger_path=Path(ledger) if ledger else None,
         route=RouteConfig.model_validate_json(args.route.read_text()) if args.route else None,
         csv_limit=args.csv_limit,

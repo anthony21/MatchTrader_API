@@ -24,7 +24,8 @@ def test_setup_prompts_only_for_missing_values_never_echoes_the_password_and_kee
     env = tmp_path / '.env'
     env.write_text("# keep me\nAQF_PLATFORM_URL='https://platform.aquafunded.com'\nAQF_ENABLE_WRITES=false\n", encoding='utf-8')
     asked, printed = [], []
-    answers = iter(['me@example.com', '', '276954', '', ''])   # email, (password via secret), account, broker id, ledger
+    # Account id is never prompted: it is known only from the broker login response, never .env.
+    answers = iter(['me@example.com', '', ''])   # email, (password via secret), broker id, ledger
 
     def ask(prompt):
         asked.append(prompt)
@@ -36,7 +37,9 @@ def test_setup_prompts_only_for_missing_values_never_echoes_the_password_and_kee
 
     values = control.ensure_env(env, ask=ask, ask_secret=ask_secret, out=printed.append)
     assert values['AQF_EMAIL'] == 'me@example.com' and values['AQF_PASSWORD'] == 'hunter22'
-    assert values['AQF_ACCOUNT_ID'] == '276954' and values['AQF_R01_LEDGER'] == 'C:/HCAMM/trials/R01_TRADES.csv'
+    assert values['AQF_R01_LEDGER'] == 'C:/HCAMM/trials/R01_TRADES.csv'
+    assert 'AQF_ACCOUNT_ID' not in values   # never asked, never stored
+    assert not any('account' in p.lower() for p in asked)
     assert len(values['AQF_BRIDGE_TOKEN']) >= 32
     assert not any(p.startswith('SECRET') is False and 'URL' in p for p in asked)   # the URL was present: not asked
     assert 'hunter22' not in ' '.join(printed)
@@ -44,7 +47,7 @@ def test_setup_prompts_only_for_missing_values_never_echoes_the_password_and_kee
     assert text.startswith('# keep me\n') and 'AQF_ENABLE_WRITES=false' in text and 'AQF_PASSWORD=hunter22' in text
     # A second run asks nothing and changes nothing.
     again = control.ensure_env(env, ask=lambda p: pytest.fail('asked ' + p), ask_secret=lambda p: pytest.fail('asked secret'), out=printed.append)
-    assert again['AQF_ACCOUNT_ID'] == '276954' and env.read_text(encoding='utf-8') == text
+    assert again['AQF_EMAIL'] == 'me@example.com' and env.read_text(encoding='utf-8') == text
 
 
 def test_setup_insists_on_a_value_and_uses_the_default_url(tmp_path):
@@ -74,34 +77,34 @@ def test_hidden_child_runs_headless_with_the_same_config_and_auto_start():
     assert '--auto-start' not in control.child_command(SimpleNamespace(config=args.config, runtime=args.runtime, auto_start=False))
 
 
-def test_auto_start_connects_the_configured_account_then_starts_capture(monkeypatch):
+def test_auto_start_starts_capture_and_never_connects_an_account(monkeypatch):
+    # Account ids come only from broker login + operator selection, so auto-start never
+    # preselects or connects an account; it only fetches a session token and starts capture.
     calls, logged = [], []
 
     def fake_api(url, path, body=None, token=None, timeout=20):
         calls.append((path, body, token))
         if path == '/api/session':
             return {'token': 'tok'}
-        if path == '/api/connect':
-            return {'connection': 'connected', 'connection_message': 'Connected. Copying is disabled.'}
         if path == '/api/capture/start':
             return {'running': True, 'capture_message': 'Native event receiver enabled'}
         raise AssertionError(path)
 
     monkeypatch.setattr(control, 'api_call', fake_api)
-    assert control.auto_start('http://127.0.0.1:8765', '276954', logged.append) is True
-    assert [c[0] for c in calls] == ['/api/session', '/api/connect', '/api/capture/start']
-    assert calls[1] == ('/api/connect', {'account_id': '276954'}, 'tok')
-    assert any('connect 276954 -> connected' in line for line in logged) and any('capture -> running' in line for line in logged)
+    assert control.auto_start('http://127.0.0.1:8765', logged.append) is True
+    assert [c[0] for c in calls] == ['/api/session', '/api/capture/start']
+    assert '/api/connect' not in [c[0] for c in calls]
+    assert any('capture -> running' in line for line in logged)
 
-    # A failed connect still starts capture and reports both.
+    # A failed capture start is reported and returns False.
     def flaky(url, path, body=None, token=None, timeout=20):
-        if path == '/api/connect':
-            raise OSError('broker down')
+        if path == '/api/capture/start':
+            raise OSError('capture down')
         return fake_api(url, path, body, token, timeout)
     monkeypatch.setattr(control, 'api_call', flaky)
     logged.clear()
-    assert control.auto_start('http://127.0.0.1:8765', '276954', logged.append) is False
-    assert any('connect failed' in line for line in logged) and any('capture -> running' in line for line in logged)
+    assert control.auto_start('http://127.0.0.1:8765', logged.append) is False
+    assert any('capture start failed' in line for line in logged)
 
 
 def host(tmp_path, *, python=True, dist=True, env=None, ledger=False):

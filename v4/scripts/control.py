@@ -25,12 +25,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# What the launcher needs before it can start and connect. (key, prompt, default, secret)
+# Credentials the launcher needs. The account is NOT here: it is discovered from the login
+# response and chosen in the dashboard, never taken from .env. (key, prompt, default, secret)
 REQUIRED = [
     ('AQF_PLATFORM_URL', 'Match-Trader terminal URL', 'https://platform.aquafunded.com', False),
     ('AQF_EMAIL', 'Broker login email', '', False),
     ('AQF_PASSWORD', 'Broker login password', '', True),
-    ('AQF_ACCOUNT_ID', 'Trading account ID to connect', '', False),
 ]
 OPTIONAL = [
     ('AQF_BROKER_ID', 'Broker ID (blank to discover it at login)', '', False),
@@ -245,22 +245,15 @@ def wait_ready(url, *, attempts=80, pause=0.25, stop=None):
     return False
 
 
-def auto_start(url, account_id, log):
-    """Connect the configured account and start capture, through the dashboard's own API."""
+def auto_start(url, log):
+    """Start capture through the dashboard's own API. Account ids come only from broker
+    login + operator selection, never from .env, so no account is preselected here."""
     try:
         token = api_call(url, '/api/session')['token']
     except (OSError, KeyError, ValueError) as error:
-        log(f'auto-start: no session token ({type(error).__name__}); connect and start capture by hand')
+        log(f'auto-start: no session token ({type(error).__name__}); start capture by hand')
         return False
     ok = True
-    if account_id:
-        try:
-            status = api_call(url, '/api/connect', {'account_id': account_id}, token, timeout=60)
-            log(f"auto-start: connect {account_id} -> {status.get('connection')} {status.get('connection_message', '')}")
-            ok = status.get('connection') == 'connected'
-        except OSError as error:
-            log(f'auto-start: connect failed ({type(error).__name__}); capture will still start')
-            ok = False
     try:
         status = api_call(url, '/api/capture/start', {}, token, timeout=30)
         log(f"auto-start: capture -> {'running' if status.get('running') else 'stopped'}; {status.get('capture_message', '')}")
@@ -357,7 +350,7 @@ def run(args):
             raise RuntimeError('Startup did not finish. See data/runtime logs.')
         log(f'MatchTrader API is ON: {url}')
         if args.auto_start:
-            auto_start(url, read_env(env_file).get('AQF_ACCOUNT_ID', ''), log)
+            auto_start(url, log)
         if not args.no_console:
             print('Press Enter here, use Stop MatchTrader, or click Shut down API to turn it off.', flush=True)
         if not args.no_browser:

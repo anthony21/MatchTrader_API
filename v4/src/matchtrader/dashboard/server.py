@@ -441,8 +441,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(400, {'error': str(exc)})
             elif self.path == '/api/broker-profiles/action':
                 if controller.broker_profiles is None:
-                    raise ValueError('Broker profiles not configured')
-                controller.broker_profiles.action(payload.get('profile'), payload.get('action'), payload.get('account_id'))
+                    return self.reply(400, {'error': 'Broker profiles not configured'})
+                # Surface the real reason (which account, why not connected) instead of the
+                # generic catch-all below, the same way copy-controls does.
+                try:
+                    controller.broker_profiles.action(payload.get('profile'), payload.get('action'), payload.get('account_id'))
+                except (ValueError, TypeError) as exc:
+                    controller.native_store.notify_stream()
+                    return self.reply(400, {'error': str(exc)})
                 result = controller.broker_profiles.snapshot()
             elif self.path == "/api/connect":
                 result = controller.connect(payload.get("account_id"))
