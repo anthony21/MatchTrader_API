@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -88,14 +89,13 @@ def ensure_env(path, *, ask=input, ask_secret=getpass.getpass, out=print):
                 break
             out('    A value is required.')
         updates[key] = answer
-    if missing:
-        for key, prompt, default, _secret in OPTIONAL:
-            if values.get(key):
-                continue
-            suffix = f' [{default}]' if default else ''
-            answer = ask(f'  {prompt}{suffix}: ').strip() or default
-            if answer:
-                updates[key] = answer
+    # Optional keys are asked once, when the line is absent altogether; an empty answer is written
+    # as an empty line so the question is not repeated on every start.
+    for key, prompt, default, _secret in OPTIONAL:
+        if key in values:
+            continue
+        suffix = f' [{default}]' if default else ''
+        updates[key] = ask(f'  {prompt}{suffix}: ').strip() or default
     if not values.get('AQF_BRIDGE_TOKEN'):
         updates['AQF_BRIDGE_TOKEN'] = secrets.token_urlsafe(32)
         out('  Generated a local bridge token (AQF_BRIDGE_TOKEN) for the Quantower extension.')
@@ -104,6 +104,121 @@ def ensure_env(path, *, ask=input, ask_secret=getpass.getpass, out=print):
         out(f'  Saved {", ".join(updates)} to {path}.')
     values.update(updates)
     return values
+
+
+# ---- host requirements ---------------------------------------------------------------------------
+def probe_platform(url, timeout=8):
+    """One HTTPS GET of the broker's platform details over TLS 1.3; returns the HTTP status."""
+    import ssl
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+    request = urllib.request.Request(url.rstrip('/') + '/manager/platform-details',
+                                     headers={'User-Agent': 'hcamm-matchtrader/0.1.0', 'Accept': 'application/json'})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+
+
+def port_free(port):
+    with socket.socket() as probe:
+        try:
+            probe.bind(('127.0.0.1', port))
+            return True
+        except OSError:
+            return False
+
+
+def check_host(config_path, *, probe=probe_platform, min_free_mb=500):
+    """What this machine needs before the launcher can run. Returns (status, name, detail) rows;
+    status is OK, WARN (it will run, but something is off) or FAIL (it will not run)."""
+    import platform
+    import shutil
+    rows = []
+
+    def add(status, name, detail=''):
+        rows.append((status, name, detail))
+
+    add('OK' if sys.version_info >= (3, 12) else 'FAIL', 'Python 3.12 or later',
+        f'{platform.python_version()} at {sys.executable}')
+    add('OK' if platform.system() == 'Windows' else 'FAIL', 'Windows', platform.platform())
+    config_path = Path(config_path)
+    if not config_path.exists():
+        add('FAIL', 'local-runtime.json', f'missing: {config_path}; copy local-runtime.json.example')
+        return rows
+    try:
+        config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    except ValueError as error:
+        add('FAIL', 'local-runtime.json', f'not valid JSON ({error})')
+        return rows
+    base = config_path.resolve().parent
+    resolve = lambda key: (base / config[key]).resolve() if key in config else None  # noqa: E731
+    python = resolve('python')
+    add('OK' if python and python.is_file() else 'FAIL', 'Python environment (.venv)',
+        str(python) if python else 'no "python" entry')
+    dist = base / 'frontend' / 'dist' / 'index.html'
+    add('OK' if dist.is_file() else 'FAIL', 'Dashboard build (frontend/dist)',
+        str(dist) if dist.is_file() else 'run: npm.cmd --prefix frontend run build')
+    relay = resolve('relay_config')
+    add('OK' if relay and relay.is_file() else 'FAIL', 'Relay config', str(relay) if relay else 'no "relay_config" entry')
+    env_file = resolve('env')
+    values = read_env(env_file) if env_file and env_file.is_file() else {}
+    missing = [key for key, *_ in REQUIRED if not values.get(key)]
+    if not env_file or not env_file.is_file():
+        add('WARN', 'Credentials (.env)', 'missing; setup will ask for them')
+    elif missing:
+        add('WARN', 'Credentials (.env)', 'setup will ask for: ' + ', '.join(missing))
+    else:
+        add('OK', 'Credentials (.env)', f'{env_file} has every required key')
+    if values.get('AQF_ENABLE_WRITES', '').lower() != 'true':
+        add('WARN', 'Broker writes', 'AQF_ENABLE_WRITES is not true: live sends are refused')
+    else:
+        add('OK', 'Broker writes', 'AQF_ENABLE_WRITES=true')
+    for key, default in [('dashboard_port', 8765), ('ws_port', 8767), ('relay_port', 8787)]:
+        port = int(config.get(key, default))
+        if port == 0:
+            continue
+        add('OK' if port_free(port) else 'FAIL', f'Port {port} ({key})',
+            'free' if port_free(port) else 'in use: an instance may already be running; use Stop MatchTrader')
+    data = resolve('data') or base / 'data'
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        marker = data / '.write-check'
+        marker.write_text('ok')
+        marker.unlink()
+        add('OK', 'Data folder writable', str(data))
+    except OSError as error:
+        add('FAIL', 'Data folder writable', f'{data}: {type(error).__name__}')
+    free_mb = shutil.disk_usage(base).free // (1024 * 1024)
+    add('OK' if free_mb >= min_free_mb else 'WARN', 'Free disk space', f'{free_mb} MB free')
+    ledger = values.get('AQF_R01_LEDGER')
+    if ledger:
+        add('OK' if Path(ledger).is_file() else 'WARN', 'R01 ledger',
+            ledger if Path(ledger).is_file() else f'{ledger} not found; R01 observation and lane stay idle')
+    else:
+        add('WARN', 'R01 ledger', 'AQF_R01_LEDGER not set; R01 observation and lane stay idle')
+    p01 = Path(values.get('AQF_P01_LOG_PATH') or 'C:/Quantower/Settings/Scripts/Indicators/_HCAMM_Shared/P01_RR.log')
+    add('OK' if p01.is_file() else 'WARN', 'P01 log', str(p01) if p01.is_file() else f'{p01} not found; P01 copying stays idle')
+    url = values.get('AQF_PLATFORM_URL')
+    if url:
+        try:
+            status = probe(url)
+            add('OK' if status < 500 else 'WARN', 'Broker reachable over TLS 1.3', f'{url} answered HTTP {status}')
+        except Exception as error:
+            add('WARN', 'Broker reachable over TLS 1.3', f'{url}: {type(error).__name__}; connect will fail until it is')
+    return rows
+
+
+def print_check(rows, out=print):
+    width = max(len(name) for _, name, _ in rows)
+    for status, name, detail in rows:
+        out(f'  [{status:4s}] {name.ljust(width)}  {detail}')
+    fails = [name for status, name, _ in rows if status == 'FAIL']
+    warns = [name for status, name, _ in rows if status == 'WARN']
+    out(f'  {len(rows) - len(fails) - len(warns)} ok, {len(warns)} warnings, {len(fails)} failures')
+    return not fails
 
 
 # ---- dashboard API -------------------------------------------------------------------------------
@@ -273,6 +388,7 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stop', action='store_true', help='Ask the running launcher to stop everything')
+    parser.add_argument('--check', action='store_true', help='Report whether this machine meets the requirements')
     parser.add_argument('--setup', action='store_true', help='Check .env first and prompt for missing credentials')
     parser.add_argument('--detach', action='store_true', help='Run the launcher hidden and return once the API answers')
     parser.add_argument('--auto-start', action='store_true', help='Connect the configured account and start capture')
@@ -287,6 +403,13 @@ def main(argv=None):
         (runtime / 'stop.requested').touch()
         print('Stop requested. The launcher will finish active exchanges and close all three services.')
         return 0
+    if args.check:
+        print('Host requirements:')
+        if not print_check(check_host(args.config)):
+            print('Fix the failures above, then start again.')
+            return 1
+        if not (args.setup or args.detach or args.auto_start):
+            return 0   # a bare --check reports and stops; it never starts anything
     if args.setup:
         config = json.loads(args.config.read_text(encoding='utf-8-sig'))
         env_file = (args.config.resolve().parent / config['env']).resolve()

@@ -335,6 +335,37 @@ def test_expired_session_refreshes_once_before_read(api_factory):
     assert sum(r.url.path.endswith("/refresh-token") for r in seen) == 1
 
 
+def _jwt(claims):
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"h.{body}.s"
+
+
+def test_renewal_is_timer_driven_and_costs_nothing_while_the_token_is_valid(api_factory):
+    import time as clock
+
+    def handler(r):
+        if r.url.path.endswith("/refresh-token"):
+            return httpx.Response(200, json={"token": _jwt({"exp": int(clock.time()) + 3600})})
+
+    api, seen = api_factory(handler)
+    assert api.connection.renewal_due() is False and api.connection.renew_if_due() is False   # no session yet
+    api.login()
+    assert api.connection.renewal_due() is False
+    assert api.connection.renew_if_due() is False
+    assert not any(r.url.path.endswith("/refresh-token") for r in seen)      # nothing polled the broker
+    api.connection._expires = 0                                              # the renewal timer ran out
+    assert api.connection.renewal_due() is True
+    assert api.connection.renew_if_due() is True
+    assert sum(r.url.path.endswith("/refresh-token") for r in seen) == 1
+    assert api.connection.renewal_due() is False                             # timer re-armed, token fresh
+    # A session token about to expire is due even though the timer has time left.
+    api.connection._session_token = _jwt({"exp": int(clock.time()) + 30})
+    assert api.connection.renewal_due(margin_seconds=90) is True
+    assert api.connection.renewal_due(margin_seconds=10) is False
+    api.connection.release()
+    assert api.connection.renewal_due() is False
+
+
 def test_refresh_budget_caps_failed_attempts(api_factory):
     api, seen = api_factory(lambda r: httpx.Response(401) if r.url.path.endswith("/refresh-token") else None)
     api.login()

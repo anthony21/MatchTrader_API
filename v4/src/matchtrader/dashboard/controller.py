@@ -23,7 +23,7 @@ from ..capture.relay_store import RelayLogStore
 from ..capture.router import CaptureRouter
 from ..capture.store import CaptureStore
 from ..core.errors import APIError
-from ..core.settings import Settings
+from ..core.settings import PRIMARY_PREFIX, Settings
 from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_controls import CopyControls, load_controls, save_controls
 from .broker_session import BrokerSession
@@ -125,6 +125,50 @@ class DashboardController:
         self.halt = Event()
         self.worker = None
         self._open_journal()
+        # Session tokens renew on their own timer, never by polling and never only on the next
+        # request: one quiet thread asks each connected owner whether renewal is due.
+        self._closing = Event()
+        self._keeper = Thread(target=self._keep_sessions_fresh, daemon=True, name="session-keeper")
+        self._keeper.start()
+
+    # ---- session renewal ----------------------------------------------------------------------
+    def _connected_owners(self):
+        with self.lock:
+            owners = [("primary", self.api)] if self.api and self.connection == "connected" else []
+        profiles = self.broker_profiles
+        if profiles:
+            for name, entry in profiles.entries.items():
+                with entry["lock"]:
+                    if name != PRIMARY_PREFIX and entry["api"] and entry["state"] == "connected":
+                        owners.append((name, entry["api"]))
+        return owners
+
+    def refresh_sessions_once(self, margin_seconds=90):
+        """One pass: renew every connected owner whose token timer is up. Network runs outside the
+        controller lock; the pushed status carries the new expiry, so the UI never polls for it."""
+        renewed, failed = [], []
+        for name, api in self._connected_owners():
+            try:
+                if api.connection.renew_if_due(margin_seconds):
+                    renewed.append(name)
+            except Exception as error:
+                failed.append(f"{name} ({type(error).__name__})")
+        if renewed or failed:
+            with self.lock:
+                stamp = datetime.now(UTC).strftime("%H:%M:%SZ")
+                if failed:
+                    self.token_message = f"Automatic token refresh failed at {stamp} for {', '.join(failed)}; use Refresh token."
+                else:
+                    self.token_message = f"Token refreshed automatically at {stamp}."
+            self.native_store.notify_stream()
+        return renewed, failed
+
+    def _keep_sessions_fresh(self):
+        while not self._closing.wait(20):
+            try:
+                self.refresh_sessions_once()
+            except Exception:
+                pass  # the keeper must outlive any single failure; the next pass reports it
 
     def _open_journal(self):
         if not self.selected:
@@ -733,6 +777,7 @@ class DashboardController:
                 return self.status()
 
     def close(self):
+        self._closing.set()
         if self.tradingbox_forwarder:
             self.tradingbox_forwarder.close()
         if self.broker_profiles:
