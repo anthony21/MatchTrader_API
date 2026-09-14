@@ -438,6 +438,16 @@ def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_
     assert not controller.signal_copy.armed
     status, raw = call(server, '/api/signal-copy-settings', headers=headers)
     assert status == 200 and json.loads(raw)['live'] is False
+    # The symbol map is served and replaced on its own route; the lane is not re-declared.
+    assert call(server, '/api/symbol-map')[0] == 401
+    status, raw = call(server, '/api/symbol-map', headers=headers)
+    assert status == 200 and json.loads(raw)['US TECH 100']['destination'] == 'NAS100'
+    replaced = {'US TECH 100': {'destination': 'NAS100', 'lots': '0.3', 'order_type': 'LIMIT'},
+                'EURUSD': {'destination': 'EURUSD', 'lots': '0.01', 'order_type': 'SOURCE'}}
+    assert call(server, '/api/symbol-map', 'POST', replaced, headers)[0] == 200
+    assert controller.signal_copy.symbols.lookup('EURUSD').destination == 'EURUSD'
+    assert json.loads(call(server, '/api/signal-copy-settings', headers=headers)[1])['config']['symbols']['US TECH 100']['fixed_lots'] == '0.3'
+    assert call(server, '/api/symbol-map', 'POST', {}, headers)[0] == 400
     assert call(server, '/api/signal-copying', 'POST', {'enabled': True}, headers)[0] == 200
     assert controller.signal_copy.armed
     controller.start_capture()

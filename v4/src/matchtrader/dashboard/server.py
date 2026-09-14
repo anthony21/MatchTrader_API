@@ -101,6 +101,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.controller.signal_copy.settings())
             if path == '/api/signal-copy-events':
                 return self.reply(200, self.server.controller.signal_copy.feed())
+            if path == '/api/symbol-map':
+                return self.reply(200, self.server.controller.signal_copy.symbols.model_dump(mode='json'))
             if path == '/api/tradingbox-forwarding':
                 forwarder = self.server.controller.tradingbox_forwarder
                 return self.reply(200, forwarder.status() if forwarder else {'enabled': False, 'live': False, 'key_configured': False, 'url': ''})
@@ -491,6 +493,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(400, {"error": str(exc)})
             elif self.path == '/api/signal-copy-settings':
                 result = controller.configure_signals(payload)
+            elif self.path == '/api/symbol-map':
+                # The symbol map is its own table: replace it without touching the lane settings.
+                result = controller.signal_copy.configure_symbols(payload)
             elif self.path == '/api/signal-copying':
                 result = controller.set_signal_copying(payload.get('enabled'))
             elif self.path == "/api/token/refresh":

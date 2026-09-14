@@ -1,8 +1,10 @@
-"""Format configured strategy intents for broker submission with durable duplicate control.
+"""Receive signals, decide once through the engine, dispatch once, and remember everything.
 
-The dashboard supplies the shared Live/Paper mode. Its flow opens new intents and
-cancels pending orders only; close messages are observations. Standalone legacy
-callers retain the older arming and unwind contract.
+    receive()  ->  parse_signal()  ->  SignalEngine.decide()  ->  BrokerDispatcher.send()
+
+This module keeps the durable record (signals and their appearances) and the lane settings.
+The symbol map is a separate file the engine looks up. Cancels and closes of exposure this
+owner created go through capture.unwind or the dispatcher's cancel, whatever the switches say.
 """
 import hashlib
 import json
@@ -11,17 +13,18 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
-from types import SimpleNamespace
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..capture import unwind
-from ..capture.router import CaptureRouter
+from ..signals import BrokerDispatcher, Context, Refusal, SignalEngine, SymbolMap, SymbolMapping, parse_signal
+from ..signals.shapes import BaseSignal as Signal  # noqa: F401  (the base shape, for callers that build one)
 from .copy_settings import save_settings
 
 
 class SignalSymbol(BaseModel):
+    """The legacy per-symbol row the settings form still posts; it is split into the symbol map."""
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False, str_strip_whitespace=True)
     destination: str = Field(min_length=1, max_length=100)
     fixed_lots: Decimal = Field(gt=0)
@@ -30,12 +33,16 @@ class SignalSymbol(BaseModel):
 
 
 class SignalSettings(BaseModel):
+    """The lane: which machine and source, to which account, and how attribution is proven.
+
+    `symbols` is accepted for compatibility with saved files and the current form, but it is
+    stored in the symbol map, not in the lane."""
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     machine_id: str = Field(min_length=1, max_length=100)
     source: str = Field(default='chain', min_length=1, max_length=100)
     connection_name: str = Field(default='', max_length=200)
     destination_account: str = Field(min_length=1, max_length=200)
-    symbols: dict[Annotated[str, Field(min_length=1, max_length=100)], SignalSymbol] = Field(min_length=1)
+    symbols: dict[Annotated[str, Field(min_length=1, max_length=100)], SignalSymbol] = Field(default_factory=dict)
     exclusive_destination: Literal[True]
     p01_log_enabled: bool = False
     additional_sources: list[Literal['chain', 'panel']] = Field(default_factory=list)
@@ -50,34 +57,9 @@ class SignalSettings(BaseModel):
             value = {k: v for k, v in value.items() if k != 'cancel_pending'}
         return value
 
-
-class Signal(BaseModel):
-    model_config = ConfigDict(extra='ignore', allow_inf_nan=False)
-    clientEventId: str = Field(min_length=1, max_length=200)
-    machineId: str = Field(min_length=1, max_length=100)
-    source: str = Field(min_length=1, max_length=100)
-    connectionName: str = Field(default='', max_length=200)
-    kind: str = Field(min_length=1, max_length=100)
-    label: str = Field(default='', max_length=200)
-    timestampUtc: datetime
-    symbol: str = Field(default='', max_length=100)
-    side: str = Field(default='', max_length=20)
-    entry: Decimal = Field(default=Decimal(0), ge=0)
-    stopLoss: Decimal = Field(default=Decimal(0), ge=0)
-    takeProfit: Decimal = Field(default=Decimal(0), ge=0)
-    copyOrderType: Literal['', 'MARKET', 'LIMIT', 'STOP'] = Field(default='', validation_alias=AliasChoices('copyOrderType', 'orderType'))
-
-    @field_validator('copyOrderType', mode='before')
-    @classmethod
-    def normalize_type(cls, value):
-        return value.upper() if isinstance(value, str) else value
-
-    @field_validator('timestampUtc')
-    @classmethod
-    def aware(cls, value):
-        if value.tzinfo is None:
-            raise ValueError('Timestamp must include a timezone')
-        return value.astimezone(UTC)
+    def symbol_map(self):
+        return SymbolMap({k: SymbolMapping(destination=v.destination, lots=v.fixed_lots, order_type=v.order_type)
+                          for k, v in self.symbols.items()})
 
 
 class SignalCopy:
@@ -85,9 +67,14 @@ class SignalCopy:
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / 'signal-copy-settings.json'
+        self.symbols_path = directory / 'symbol-map.json'
         self.config = SignalSettings.model_validate_json(self.path.read_text()) if self.path.exists() else None
+        self.symbols = SymbolMap.load(self.symbols_path)
+        if self.config and self.config.symbols and not len(self.symbols):
+            self.symbols = self.config.symbol_map()   # first load of a file saved before the split
         # The CaptureStore holding the trades the owner sent; cancel/closed signals unwind against it.
         self.ledger = ledger
+        self.dispatcher = BrokerDispatcher(raw_log=ledger.raw_log if ledger is not None else None)
         self.lock = RLock()
         self.armed = False
         self.copy_mode = None
@@ -108,9 +95,19 @@ class SignalCopy:
         with self.db:
             self.db.execute("UPDATE signals SET decision='uncertain',reason='Interrupted write; no automatic retry' WHERE decision='dispatching'")
 
+    @property
+    def engine(self):
+        return SignalEngine(self.config, self.symbols)
+
+    # ---- settings ----------------------------------------------------------------------------
     def settings(self):
         with self.lock:
-            return {'config': self.config.model_dump(mode='json') if self.config else None, 'live': self.armed}
+            config = self.config.model_dump(mode='json') if self.config else None
+            if config is not None:
+                config['symbols'] = {k: {'destination': m.destination, 'fixed_lots': str(m.lots),
+                                         'order_type': m.order_type, 'same_price_scale': True}
+                                     for k, m in self.symbols.root.items()}
+            return {'config': config, 'live': self.armed}
 
     def configure(self, payload):
         value = SignalSettings.model_validate(payload)
@@ -120,12 +117,30 @@ class SignalCopy:
             raise ValueError('P01 log routing requires source P01_LOG')
         if value.p01_log_enabled and any(v.order_type != 'SOURCE' for v in value.symbols.values()):
             raise ValueError('P01 log routing must preserve the source Limit/Stop order type')
+        if not value.symbols and not len(self.symbols):
+            raise ValueError('At least one symbol mapping is required')
         with self.lock:
             if self.armed and self.copy_mode != 'paper':
                 raise ValueError('Turn live signal copying off before editing settings')
-            save_settings(self.path, value)
-            self.config = value
+            if value.symbols:
+                self.symbols = value.symbol_map()
+                self.symbols.save(self.symbols_path)
+            lane = value.model_copy(update={'symbols': {}})
+            save_settings(self.path, lane)
+            self.config = lane
             return self.settings()
+
+    def configure_symbols(self, payload):
+        """Replace the symbol map on its own; the lane is untouched."""
+        symbols = SymbolMap.model_validate(payload)
+        if not len(symbols):
+            raise ValueError('At least one symbol mapping is required')
+        with self.lock:
+            if self.armed and self.copy_mode != 'paper':
+                raise ValueError('Turn live signal copying off before editing settings')
+            self.symbols = symbols
+            self.symbols.save(self.symbols_path)
+            return self.symbols.model_dump(mode='json')
 
     def arm(self, enabled):
         if type(enabled) is not bool:
@@ -134,6 +149,7 @@ class SignalCopy:
             self.armed = enabled
             self.armed_at = datetime.now(UTC) if enabled else None
 
+    # ---- the record --------------------------------------------------------------------------
     def feed(self):
         with self.lock:
             rows = self.db.execute('SELECT * FROM signals ORDER BY rowid DESC LIMIT 100').fetchall()
@@ -149,6 +165,31 @@ class SignalCopy:
                 'copy_request': json.loads(row['request']) if row['request'] else None,
                 'copy_response': json.loads(row['response']) if row['response'] else None}
 
+    def _record(self, key, **columns):
+        with self.db:
+            self.db.execute('UPDATE signals SET ' + ','.join(f'{k}=?' for k in columns) + ' WHERE id=?',
+                            (*columns.values(), key))
+
+    @staticmethod
+    def scope(raw):
+        return tuple(raw.get(k, '') for k in ('machineId', 'source', 'accountId', 'connectionName', 'symbol', 'label'))
+
+    def related(self, raw):
+        rows = self.db.execute('SELECT * FROM signals WHERE machine=? AND source=? AND label=?',
+                               (raw.get('machineId'), raw.get('source'), raw.get('label'))).fetchall()
+        return [r for r in rows if self.scope(json.loads(r['payload'])) == self.scope(raw)]
+
+    def legacy_copy(self, raw, destination):
+        """True when this module itself dispatched the intent of this lifecycle while armed."""
+        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination for r in self.related(raw))
+
+    def live_copy(self, raw, destination):
+        """True when the broker accepted a live copy of this lifecycle: exposure exists to unwind,
+        whatever the master switch says now. A paper record never counts."""
+        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination
+                   and r['decision'] == 'accepted' for r in self.related(raw))
+
+    # ---- receive -----------------------------------------------------------------------------
     def receive(self, payload, api, destination, verified):
         if not isinstance(payload, list) or not 1 <= len(payload) <= 100 or any(not isinstance(p, dict) for p in payload):
             raise ValueError('Expected an array of 1 to 100 signal objects')
@@ -158,7 +199,7 @@ class SignalCopy:
         with self.lock:
             for raw in payload:
                 try:
-                    signal = Signal.model_validate(raw)
+                    signal = parse_signal(raw)
                     results.append(self._receive(signal, raw, closed, api, destination, verified))
                 except ValueError:
                     results.append({'clientEventId': raw.get('clientEventId'), 'status': 'invalid', 'reason': 'Invalid signal identity, timestamp, or numeric fields; no copy attempted'})
@@ -184,8 +225,7 @@ class SignalCopy:
                             (key, signal.clientEventId, signal.machineId, signal.source, signal.label, signal.kind,
                              signal.timestampUtc.isoformat(), now.isoformat(), digest, serialized, 'captured', 'Local logging; no copy attempted'))
         if signal.kind == 'intent':
-            self._dispatch(key, signal, destination,
-                           lambda: self.prepare(signal, closed, api, destination, verified, now, raw=raw))
+            self._open(key, signal, raw, closed, api, destination, verified, now)
         elif self.copy_mode is not None and signal.kind == 'closed':
             pass  # This flow only opens orders and cancels pending orders; filled positions are left alone.
         elif (self.copy_mode == 'paper' and signal.kind in unwind.CANCEL_KINDS
@@ -195,48 +235,48 @@ class SignalCopy:
             self._unwind(key, signal, raw, api, destination, verified)
         return self.result(self.db.execute('SELECT * FROM signals WHERE id=?', (key,)).fetchone())
 
-    def _dispatch(self, key, signal, destination, preparer, *, force_live=False):
-        try:
-            kwargs, method = preparer()
-            if self.copy_mode == 'paper' and not force_live:
-                with self.db:
-                    self.db.execute("UPDATE signals SET decision='paper',destination=?,request=?,reason=? WHERE id=?",
-                                    (destination, json.dumps(kwargs, default=str), 'Paper: broker request recorded; nothing sent', key))
-                return
-            # Commit the attempt before invoking a broker write. Uncertain outcomes are never retried.
-            with self.db:
-                self.db.execute("UPDATE signals SET decision='dispatching',destination=?,request=? WHERE id=?", (destination, json.dumps(kwargs, default=str), key))
-            try:
-                if self.ledger is not None:
-                    self.ledger.raw_log.append('out', 'broker-request', {'signal_id': key, 'body': json.loads(json.dumps(kwargs, default=str))})
-                response = method(**kwargs)
-                response_data = response.model_dump(mode='json')
-                if self.ledger is not None:
-                    self.ledger.raw_log.append('in', 'broker-response', {'signal_id': key, 'body': response_data})
-                accepted = response.status in {'', None, 'OK'} and (bool(response.orderId or response.positionId) if signal.kind == 'intent' else response.status == 'OK')
-                decision = 'accepted' if accepted else 'uncertain'
-                reason = 'MatchTrader accepted the configured copy request' if accepted else 'Unrecognized write response; no automatic retry'
-            except Exception as error:
-                response_data = {'error_type': type(error).__name__}
-                decision = 'uncertain'
-                reason = (f'Copy write outcome unconfirmed after {type(error).__name__}; broker state not verified, '
-                          f'no automatic retry (signal {signal.machineId}:{signal.clientEventId})')
-            with self.db:
-                self.db.execute('UPDATE signals SET decision=?,reason=?,response=? WHERE id=?', (decision, reason, json.dumps(response_data), key))
-        except (ValueError, TypeError) as error:
-            with self.db:
-                self.db.execute("UPDATE signals SET decision='held',reason=? WHERE id=?", (str(error), key))
-        except Exception as error:
-            with self.db:
-                self.db.execute("UPDATE signals SET decision=CASE WHEN decision='dispatching' THEN 'uncertain' ELSE 'held' END,reason=? WHERE id=?",
-                                (f'Processing interrupted by {type(error).__name__}; no automatic retry', key))
+    # ---- open: engine, then dispatcher ---------------------------------------------------------
+    def _context(self, signal, raw, closed, api, destination, verified, now):
+        related = self.related(raw)
+        bridge = False
+        if self.copy_mode is not None and self.ledger is not None:
+            from ..capture.manual_send import already_sent
+            bridge = any(already_sent(self.ledger, trade['trade_id'])
+                         for trade in unwind.linked_trades(self.ledger, signal.machineId, signal.label))
+        return Context(
+            mode=self.copy_mode, armed=self.armed, armed_at=self.armed_at, now=now, destination=destination,
+            api=api, verified=verified,
+            ended_in_batch=self.scope(raw) in closed or (signal.machineId, signal.source, signal.label) in closed,
+            later_end_recorded=any(r['kind'] in {'closed', 'cancelled', 'cancel'}
+                                   and r['emitted'] >= signal.timestampUtc.isoformat() for r in related),
+            already_attempted=any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination
+                                  for r in related),
+            bridge_request_exists=bridge)
 
+    def _open(self, key, signal, raw, closed, api, destination, verified, now):
+        try:
+            plan = self.engine.decide(signal, self._context(signal, raw, closed, api, destination, verified, now))
+        except Refusal as refusal:
+            self._record(key, decision='held', reason=str(refusal))
+            return
+        except Exception as error:
+            self._record(key, decision='held', reason=f'Processing interrupted by {type(error).__name__}; no automatic retry')
+            return
+        request = plan.request()
+        if self.copy_mode == 'paper':
+            self._record(key, decision='paper', destination=destination, request=json.dumps(request, default=str),
+                         reason='Paper: broker request recorded; nothing sent')
+            return
+        # Commit the attempt before invoking a broker write. Uncertain outcomes are never retried.
+        self._record(key, decision='dispatching', destination=destination, request=json.dumps(request, default=str))
+        outcome = self.dispatcher.send(plan, api, correlation=key)
+        self._record(key, decision=outcome.decision, reason=outcome.reason, response=json.dumps(outcome.response))
+
+    # ---- unwind ------------------------------------------------------------------------------
     def _unwind(self, key, signal, raw, api, destination, verified):
         """A cancel or closed signal acts on exposure we created, now, whatever the toggles say."""
-        if self.copy_mode is not None and signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
-            # Cancelling an order this module placed is never a paper act: the order is real.
-            self._dispatch(key, signal, destination,
-                           lambda: self.prepare_cancel(signal, raw, api, destination, verified), force_live=True)
+        if signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
+            self._cancel_own_copy(key, signal, raw, api, destination, verified)
             return
         verb = 'cancel' if signal.kind in unwind.CANCEL_KINDS else 'close'
         outcome = None
@@ -249,116 +289,27 @@ class SignalCopy:
                                       f'unconfirmed. Check the capture journal for lifecycle {signal.label!r} '
                                       'and reconcile broker state before any retry')}
         if outcome is not None:
-            with self.db:
-                self.db.execute('UPDATE signals SET decision=?,reason=?,destination=?,request=?,response=? WHERE id=?', (
-                    outcome['decision'], outcome['reason'], destination,
-                    json.dumps(outcome['request'], default=str) if outcome['request'] is not None else None,
-                    json.dumps(outcome['response'], default=str) if outcome['response'] is not None else None, key))
-            return
-        if signal.kind in unwind.CANCEL_KINDS and self.legacy_copy(raw, destination):
-            self._dispatch(key, signal, destination,
-                           lambda: self.prepare_cancel(signal, raw, api, destination, verified), force_live=True)
+            self._record(key, decision=outcome['decision'], reason=outcome['reason'], destination=destination,
+                         request=json.dumps(outcome['request'], default=str) if outcome['request'] is not None else None,
+                         response=json.dumps(outcome['response'], default=str) if outcome['response'] is not None else None)
             return
         reason = (f'Signal carries no lifecycle label; nothing to {verb}' if not signal.label else
                   f'No sent trade is linked to lifecycle {signal.label!r} from {signal.machineId}; nothing to {verb}')
-        with self.db:
-            self.db.execute("UPDATE signals SET decision='captured',reason=? WHERE id=?", (reason, key))
+        self._record(key, decision='captured', reason=reason)
 
-    def legacy_copy(self, raw, destination):
-        """True when this module itself dispatched the intent of this lifecycle while armed."""
-        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination for r in self.related(raw))
-
-    def live_copy(self, raw, destination):
-        """True when the broker accepted a live copy of this lifecycle: exposure exists to unwind,
-        whatever the master switch says now. A paper record never counts."""
-        return any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination
-                   and r['decision'] == 'accepted' for r in self.related(raw))
-
-    def check_route(self, signal, api, destination, verified, now):
-        config = self.config
-        if not self.armed or not config:
-            raise ValueError('Live signal copying is off')
-        if destination != config.destination_account or (self.copy_mode != 'paper' and (not api or not verified)):
-            raise ValueError('Connect the configured authenticated destination')
-        if signal.machineId != config.machine_id or signal.source not in {config.source, *config.additional_sources}:
-            raise ValueError('Signal does not match the configured machine/source')
-        if config.connection_name and signal.source != 'panel' and signal.connectionName != config.connection_name:
-            raise ValueError('Signal does not match the configured chart connection')
-        if not self.armed_at or signal.timestampUtc < self.armed_at or not -5 <= (now - signal.timestampUtc).total_seconds() <= 30:
-            raise ValueError('Signal is stale or predates enabling live mode; no replay')
-        return config
-
-    @staticmethod
-    def scope(raw):
-        return tuple(raw.get(k, '') for k in ('machineId', 'source', 'accountId', 'connectionName', 'symbol', 'label'))
-
-    def related(self, raw):
-        rows = self.db.execute('SELECT * FROM signals WHERE machine=? AND source=? AND label=?',
-                               (raw.get('machineId'), raw.get('source'), raw.get('label'))).fetchall()
-        return [r for r in rows if self.scope(json.loads(r['payload'])) == self.scope(raw)]
-
-    def prepare(self, signal, closed, api, destination, verified, now, *, raw=None):
-        config = self.check_route(signal, api, destination, verified, now)
-        if self.copy_mode is not None and self.ledger is not None:
-            from ..capture.manual_send import already_sent
-            if any(already_sent(self.ledger, trade['trade_id']) for trade in unwind.linked_trades(self.ledger, signal.machineId, signal.label)):
-                raise ValueError('This lifecycle already has a bridge request; no second order')
-        raw = raw or signal.model_dump(mode='json')
-        if not signal.label:
-            raise ValueError('A labeled lifecycle is required for copying')
-        if config.x17_only and signal.source == 'chain' and not str(raw.get('detail', '')).lower().startswith('x17-spine '):
-            raise ValueError('Chain intent is not identified as X17')
-        if signal.source == 'panel' and not signal.label.startswith('P01RR_'):
-            raise ValueError('Panel intent is not identified as manual P01')
-        if self.scope(raw) in closed or (signal.machineId, signal.source, signal.label) in closed:
-            raise ValueError('This batch already contains an ended lifecycle')
-        related = self.related(raw)
-        if any(r['kind'] in {'closed', 'cancelled', 'cancel'} and r['emitted'] >= signal.timestampUtc.isoformat() for r in related):
-            raise ValueError('A later ended lifecycle was already recorded')
-        if any(r['kind'] == 'intent' and r['request'] and r['destination'] == destination for r in related):
-            raise ValueError('This scoped lifecycle already has a broker attempt; no duplicate order')
-        mapping = config.symbols.get(signal.symbol)
-        if not mapping:
-            raise ValueError('No configured symbol mapping')
-        side = {'long': 'BUY', 'short': 'SELL', 'BUY': 'BUY', 'SELL': 'SELL'}.get(signal.side)
-        if not side or min(signal.entry, signal.stopLoss, signal.takeProfit) <= 0:
-            raise ValueError('Intent needs a side and positive entry, stop and target')
-        if (side == 'BUY' and not signal.stopLoss < signal.entry < signal.takeProfit) or (side == 'SELL' and not signal.takeProfit < signal.entry < signal.stopLoss):
-            raise ValueError('Intent bracket prices do not match its side')
-        order_type = signal.copyOrderType if mapping.order_type == 'SOURCE' else mapping.order_type
-        if order_type == 'ENTRY' and signal.copyOrderType in {'LIMIT', 'STOP'}:
-            order_type = signal.copyOrderType
-        if order_type == 'ENTRY':
-            if self.copy_mode == 'paper':
-                raise ValueError('Paper preview needs an explicit source Limit or Stop order type')
-            quotes = [q for q in api.quotes(symbols=mapping.destination) if q.symbol == mapping.destination]
-            if len(quotes) != 1:
-                raise ValueError('A unique destination quote is required for pending entry')
-            quote = quotes[0]
-            bid, ask = Decimal(str(quote.bid)), Decimal(str(quote.ask))
-            if not bid.is_finite() or not ask.is_finite() or not 0 < bid <= ask:
-                raise ValueError('Destination quote is invalid')
-            timestamp = getattr(quote, 'timestampMs', None) or (getattr(quote, 'timestampSec', None) or 0) * 1000
-            if not timestamp or not -5000 <= now.timestamp() * 1000 - timestamp <= 10000:
-                raise ValueError('A fresh timestamped broker quote is required')
-            reference = ask if side == 'BUY' else bid
-            if signal.entry == reference:
-                raise ValueError('Entry equals current quote; pending type is ambiguous')
-            order_type = 'LIMIT' if (signal.entry < reference if side == 'BUY' else signal.entry > reference) else 'STOP'
-        if order_type not in {'MARKET', 'LIMIT', 'STOP'}:
-            raise ValueError('Source intent has no supported order type')
-        event = SimpleNamespace(action='CREATE', order_type=order_type, price=signal.entry, sl=signal.stopLoss, tp=signal.takeProfit, side=side)
-        if self.copy_mode != 'paper':
-            CaptureRouter._validate_instrument(api, mapping.destination, mapping.fixed_lots, event)
-        kwargs = {'instrument': mapping.destination, 'orderSide': side, 'volume': mapping.fixed_lots, 'slPrice': signal.stopLoss, 'tpPrice': signal.takeProfit}
-        if order_type == 'MARKET':
-            return kwargs, api.open_position if self.copy_mode != 'paper' else None
-        return {**kwargs, 'type': order_type, 'price': signal.entry}, api.create_pending_order if self.copy_mode != 'paper' else None
+    def _cancel_own_copy(self, key, signal, raw, api, destination, verified):
+        """Cancel a pending order this module placed. Not gated by arming, freshness or the master
+        switch: the order is real. The connection and the exact-match checks remain."""
+        try:
+            request = self.prepare_cancel(signal, raw, api, destination, verified)
+        except ValueError as error:
+            self._record(key, decision='held', reason=str(error))
+            return
+        self._record(key, decision='dispatching', destination=destination, request=json.dumps(request, default=str))
+        outcome = self.dispatcher.cancel(request, api, correlation=key)
+        self._record(key, decision=outcome.decision, reason=outcome.reason, response=json.dumps(outcome.response))
 
     def prepare_cancel(self, signal, raw, api, destination, verified):
-        """Cancel a pending order this module dispatched itself. Deliberately not gated by the arming
-        switch or signal freshness: the order exists at the broker, so a late or post-disarm cancel
-        still removes it. The connection and the exact-match checks remain."""
         if not api or not verified:
             raise ValueError('Connect the authenticated destination before cancelling its pending order')
         if getattr(getattr(api, 'connection', None), 'account_id', destination) != destination:
@@ -371,13 +322,12 @@ class SignalCopy:
         opens = [r for r in related if r['kind'] == 'intent' and r['request'] and r['destination'] == destination]
         if len(opens) != 1 or opens[0]['decision'] != 'accepted':
             raise ValueError('No unique accepted copy is linked to this cancellation')
-        original = opens[0]
-        request = json.loads(original['request'])
-        response = json.loads(original['response'])
+        request = json.loads(opens[0]['request'])
+        response = json.loads(opens[0]['response'])
         order_id = response.get('orderId')
         if not order_id or request.get('type') not in {'LIMIT', 'STOP'}:
             raise ValueError('The linked copy is not a pending order')
-        return unwind.pending_order_request(api, order_id, request), api.cancel_pending_order
+        return unwind.pending_order_request(api, order_id, request)
 
     def close(self):
         with self.lock:

@@ -108,9 +108,8 @@ def test_off_events_and_old_events_never_replay_after_arming_or_restart(tmp_path
     assert service.receive([stale], broker, "demo", True)["results"][0]["status"] == "held"
     service.close()
     service = SignalCopy(tmp_path)
-    assert service.settings()["live"] is False and service.config.symbols[
-        "US TECH 100"
-    ].fixed_lots == Decimal(".2")
+    assert service.settings()["live"] is False
+    assert service.symbols.lookup("US TECH 100").lots == Decimal(".2")   # the map survives the restart
     service.arm(True)
     assert service.receive([original], broker, "demo", True)["results"][0]["duplicate"]
     assert not broker.calls
