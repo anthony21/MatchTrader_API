@@ -143,7 +143,7 @@ class DashboardController:
                         owners.append((name, entry["api"]))
         return owners
 
-    def refresh_sessions_once(self, margin_seconds=90):
+    def refresh_sessions_once(self, margin_seconds=120):
         """One pass: renew every connected owner whose token timer is up. Network runs outside the
         controller lock; the pushed status carries the new expiry, so the UI never polls for it."""
         renewed, failed = [], []

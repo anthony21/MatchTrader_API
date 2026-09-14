@@ -353,15 +353,22 @@ def test_renewal_is_timer_driven_and_costs_nothing_while_the_token_is_valid(api_
     assert api.connection.renewal_due() is False
     assert api.connection.renew_if_due() is False
     assert not any(r.url.path.endswith("/refresh-token") for r in seen)      # nothing polled the broker
-    api.connection._expires = 0                                              # the renewal timer ran out
+    # The token's own expiry is the authority: a valid token is not due even if the 15-minute
+    # internal timer has elapsed, and it becomes due once two minutes or less remain.
+    api.connection._session_token = _jwt({"exp": int(clock.time()) + 3600})
+    api.connection._expires = 0
+    assert api.connection.renewal_due() is False
+    api.connection._session_token = _jwt({"exp": int(clock.time()) + 110})   # under two minutes left
     assert api.connection.renewal_due() is True
+    assert api.connection.renewal_due(margin_seconds=60) is False            # 110s left, 60s margin: not yet
     assert api.connection.renew_if_due() is True
     assert sum(r.url.path.endswith("/refresh-token") for r in seen) == 1
-    assert api.connection.renewal_due() is False                             # timer re-armed, token fresh
-    # A session token about to expire is due even though the timer has time left.
-    api.connection._session_token = _jwt({"exp": int(clock.time()) + 30})
-    assert api.connection.renewal_due(margin_seconds=90) is True
-    assert api.connection.renewal_due(margin_seconds=10) is False
+    assert api.connection.renewal_due() is False                             # renewed to a fresh hour
+    # With no readable expiry the monotonic timer stands in for it.
+    api.connection._session_token = "opaque"
+    assert api.connection.renewal_due() is False
+    api.connection._expires = 0
+    assert api.connection.renewal_due() is True
     api.connection.release()
     assert api.connection.renewal_due() is False
 

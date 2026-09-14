@@ -226,24 +226,24 @@ class RestConnection(BaseConnection):
         self._adopt(data, identity)
         return data
 
-    def renewal_due(self, margin_seconds=90):
-        """True when a session exists and either its renewal timer has run out or the session
-        token's own expiry is within the margin. Cheap: no network."""
+    def renewal_due(self, margin_seconds=120):
+        """True when a session exists and its token has two minutes or less left. The token's own
+        expiry is the authority: renew when the time remaining is within the margin, whatever the
+        internal 15-minute timer says. Only when the token carries no readable expiry does the
+        monotonic timer stand in for it. Cheap: no network."""
         with self._lock:
             if self.closed or not self._session_token:
                 return False
-            if time.monotonic() >= self._expires:
-                return True
             expiry = self.session_expires_at
-            if not expiry:
-                return False
-            try:
-                remaining = (datetime.fromisoformat(expiry) - datetime.now(UTC)).total_seconds()
-            except ValueError:
-                return False
-            return remaining <= margin_seconds
+            if expiry:
+                try:
+                    remaining = (datetime.fromisoformat(expiry) - datetime.now(UTC)).total_seconds()
+                except ValueError:
+                    return time.monotonic() >= self._expires
+                return remaining <= margin_seconds
+            return time.monotonic() >= self._expires
 
-    def renew_if_due(self, margin_seconds=90):
+    def renew_if_due(self, margin_seconds=120):
         """Renew on the timer, not on the next request. Returns True when a renewal ran."""
         with self._lock:
             if not self.renewal_due(margin_seconds):
