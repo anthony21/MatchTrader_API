@@ -65,7 +65,8 @@ function scheduleBrokerRefresh() {
 async function runBrokerRefresh() {
   brokerTimer = undefined
   if (disposed) return
-  if (!busy.value && brokerWorkOutstanding()) {
+  // The Broker accounts page reads the same account on its own cadence; do not read it twice.
+  if (!busy.value && page.value !== 'brokers' && brokerWorkOutstanding()) {
     try { await readBroker() } catch (err) { error.value = err.message }
   }
   scheduleBrokerRefresh()

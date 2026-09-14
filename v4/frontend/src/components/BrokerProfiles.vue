@@ -4,7 +4,9 @@ import { request } from '../api.js'
 import { localTime } from '../time.js'
 // The profile snapshot arrives on the dashboard stream; this never polls for it.
 const props = defineProps({ pushed: Object })
-const profiles = ref([]), busy = ref([]), error = ref('')
+// busy: a profile the operator is acting on (buttons lock). refreshing: a background broker
+// read, which must never lock or relabel a button; it only shows a quiet note on the card.
+const profiles = ref([]), busy = ref([]), refreshing = ref([]), error = ref('')
 const loginProfile = ref(''), tradingAccount = ref('')
 const selectedProfile = computed(() => profiles.value.find(p => p.profile === loginProfile.value))
 const loginStatus = computed(() => selectedProfile.value?.login_status || 'disconnected')
@@ -32,14 +34,19 @@ async function act(profile, action, account_id) {
 function working(row) {
   return row.connection === 'connected' && ((row.orders?.length || 0) + (row.positions?.length || 0)) > 0
 }
+async function background(profile) {
+  // Skipped while the operator is acting on this profile; never marks it busy.
+  if (busy.value.includes(profile) || refreshing.value.includes(profile)) return
+  refreshing.value = [...refreshing.value, profile]
+  try { apply(await request('broker-profiles/action', { profile, action: 'refresh' })); error.value = '' }
+  catch (e) { if (!disposed) error.value = e.message }
+  finally { refreshing.value = refreshing.value.filter(p => p !== profile) }
+}
 async function refreshWorking() {
   timer = undefined
   if (disposed) return
   const live = profiles.value.filter(working)
-  if (live.length) {
-    try { await Promise.all(live.map(p => act(p.profile, 'refresh'))) }
-    catch (e) { if (!disposed) error.value = e.message }
-  }
+  if (live.length) await Promise.all(live.map(p => background(p.profile)))
   schedule()
 }
 function schedule() {
@@ -79,7 +86,7 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
         <button :disabled="busy.includes(p.profile) || p.connection !== 'connected'" @click="act(p.profile, 'refresh')">Refresh {{ p.profile }}</button>
         <button :disabled="busy.includes(p.profile) || p.connection !== 'connected'" @click="act(p.profile, 'disconnect')">Disconnect {{ p.profile }}</button></div>
       <div v-if="p.balance" class="broker-balance"><span>Balance <strong>{{ p.balance.balance }} {{ p.balance.currency }}</strong></span><span>Equity <strong>{{ p.balance.equity }} {{ p.balance.currency }}</strong></span></div>
-      <p>Last successful snapshot: {{ localTime(p.updated_at) }}</p>
+      <p>Last successful snapshot: {{ localTime(p.updated_at) }}<span v-if="refreshing.includes(p.profile)" class="refreshing" role="status"> · Refreshing…</span></p>
       <template v-if="p.connection === 'connected'">
         <h4>Pending orders · {{ p.orders?.length ?? 0 }}</h4>
         <div v-for="o in p.orders" :key="`${p.profile}:order:${o.id}`" class="broker-trade"><strong>{{ o.symbol }} {{ o.side }}</strong> · {{ o.volume }} lots · {{ o.type }} @ {{ o.activationPrice }}<small>SL {{ o.stopLoss ?? '—' }} · TP {{ o.takeProfit ?? '—' }} · Order {{ o.id }}</small></div>
@@ -92,5 +99,5 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
 <style scoped>
 .login-picker{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:16px 0}.login-picker label{display:grid;gap:8px;min-width:0;max-width:100%}.login-picker select{padding:10px;max-width:100%;border:1px solid #ced8e4;border-radius:7px}
 .platform-status{flex-basis:100%;margin:0}.account-picker{min-width:240px}
-.brokers-page{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:18px}.broker-intro{grid-column:1/-1}.broker-intro,.broker-card{padding:22px;min-width:0}.broker-card p,.broker-card small{overflow-wrap:anywhere;color:#52647a}.broker-actions{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.brokers-page button{padding:9px;border:1px solid #ced8e4;border-radius:7px;cursor:pointer}.broker-balance{display:flex;gap:22px;flex-wrap:wrap}.broker-balance strong{display:block;font-size:21px}.broker-trade{border-top:1px solid #dbe3ed;padding:12px 0;overflow-wrap:anywhere}.broker-trade small{display:block;margin-top:6px}
+.brokers-page{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:18px}.broker-intro{grid-column:1/-1}.broker-intro,.broker-card{padding:22px;min-width:0}.broker-card p,.broker-card small{overflow-wrap:anywhere;color:#52647a}.broker-actions{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.brokers-page button{padding:9px;border:1px solid #ced8e4;border-radius:7px;cursor:pointer}.broker-balance{display:flex;gap:22px;flex-wrap:wrap}.broker-balance strong{display:block;font-size:21px}.broker-trade{border-top:1px solid #dbe3ed;padding:12px 0;overflow-wrap:anywhere}.broker-trade small{display:block;margin-top:6px}.refreshing{color:#8a94a6;font-size:13px}
 </style>

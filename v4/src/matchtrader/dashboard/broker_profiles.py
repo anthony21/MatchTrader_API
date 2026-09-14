@@ -212,8 +212,12 @@ class BrokerProfiles:
                             raise ValueError('Primary account changed')
                         if action == 'connect' and self.primary.api is None:
                             self.primary.connect(settings.account_id)
+                        # Take the owner under the controller lock, read the broker outside it: a
+                        # refresh or a fresh selection must never queue behind the capture worker's
+                        # own broker calls. The REST connection serialises its own requests.
                         with self.primary.lock:
-                            self._read(entry, self.primary.api, settings.account_id)
+                            api = self.primary.api
+                        self._read(entry, api, settings.account_id)
                     else:
                         if action == 'connect' and entry['api'] is None:
                             api = self.factory(settings)

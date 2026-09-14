@@ -99,6 +99,31 @@ test('follows the pushed active profile and later pushes without fetching', asyn
   w.unmount()
 })
 
+test('a background refresh never locks or relabels the buttons; only an operator action does', async () => {
+  vi.useFakeTimers()
+  const working = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'connected', account_id: '1',
+    accounts: [{ id: '1' }], orders: [{ id: 'o1' }], positions: [], revision: 0 }
+  let release
+  request.mockImplementation(() => new Promise(resolve => { release = () => resolve({ profiles: [{ ...working, revision: 1 }] }) }))
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [working] } } })
+  await flushPromises()
+  await vi.advanceTimersByTimeAsync(5000)          // the background read is now in flight
+  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'refresh' })
+  const refresh = w.findAll('.broker-actions button')[0]
+  expect(refresh.element.disabled).toBe(false)
+  expect(w.find('.login-picker button').text()).not.toBe('Working…')
+  expect(w.find('.refreshing').text()).toContain('Refreshing')
+  release(); await flushPromises()
+  expect(w.find('.refreshing').exists()).toBe(false)
+  // An operator click locks the buttons while it runs.
+  request.mockImplementation(() => new Promise(resolve => { release = () => resolve({ profiles: [{ ...working, revision: 2 }] }) }))
+  await refresh.trigger('click'); await flushPromises()
+  expect(w.findAll('.broker-actions button')[0].element.disabled).toBe(true)
+  release(); await flushPromises()
+  expect(w.findAll('.broker-actions button')[0].element.disabled).toBe(false)
+  w.unmount()
+})
+
 test('refreshes broker data only while a connected profile has something pending or open, then stops', async () => {
   vi.useFakeTimers()
   const working = { profile: 'AQF', connection: 'connected', orders: [{ id: 'o1' }], positions: [], revision: 0 }

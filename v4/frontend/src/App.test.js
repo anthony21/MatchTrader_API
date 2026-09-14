@@ -69,6 +69,21 @@ test('broker orders and positions refresh only while something is pending or ope
   expect(request).toHaveBeenCalledTimes(4)
 })
 
+test('the shell stands down its broker poll while the Broker accounts page reads the same account', async () => {
+  vi.useFakeTimers()
+  push({ ...full, status: { ...idle, orders: [{ id: 'o1' }] } })
+  request.mockResolvedValue({ ...idle, orders: [{ id: 'o1' }] })
+  const wrapper = mount(App)
+  await flushPromises()
+  await wrapper.findAll('button').find(b => b.text() === 'Broker accounts').trigger('click')
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(request).not.toHaveBeenCalledWith('orders/refresh', expect.anything())
+  await wrapper.findAll('button').find(b => b.text() === 'Trading bridge').trigger('click')
+  await vi.advanceTimersByTimeAsync(5000)
+  expect(request).toHaveBeenCalledWith('orders/refresh', { account_id: '123' })
+  wrapper.unmount()
+})
+
 test('status, events, mappings and broker profiles are never fetched, even with an account connected', async () => {
   push(full)
   request.mockResolvedValue(idle)
