@@ -26,7 +26,8 @@ def load_profiles(path):
             raise ValueError('Broker prefixes must use uppercase letters and digits')
         fields = {name: values[prefix + '_' + name.upper()] for name in Settings.model_fields
                   if values.get(prefix + '_' + name.upper()) not in (None, '')}
-        fields['enable_writes'] = False
+        # Each account has full API access; whether it may place orders is its own
+        # <PREFIX>_ENABLE_WRITES flag (default off), not a blanket read-only override.
         # An account id is known only from the login response, never from .env: a profile always
         # starts unselected and gets its account from discovery + selection.
         fields.pop('account_id', None)
@@ -74,7 +75,7 @@ class BrokerProfiles:
     def __init__(self, settings, primary, *, api_factory=MatchTraderAPI, names=None):
         self.primary, self.factory = primary, api_factory
         self.names = dict(names or {})
-        self.entries = {name: {'settings': value.model_copy(update={'enable_writes': False}), 'lock': RLock(), 'api': None, 'state': 'disconnected',
+        self.entries = {name: {'settings': value.model_copy(), 'lock': RLock(), 'api': None, 'state': 'disconnected',
                                'error': '', 'data': {}, 'revision': 0, 'accounts': [], 'authentication': None} for name, value in settings.items()}
 
     def _entry(self, name):

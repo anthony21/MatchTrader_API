@@ -17,7 +17,10 @@ def test_env_profiles_do_not_inherit_credentials_and_limit_five(tmp_path, monkey
     assert values['GTR'].email == ''
     assert values['AQF'].password.get_secret_value() == ''
     assert values['GTR'].password.get_secret_value() == 'gtr-only'
-    assert not values['GTR'].enable_writes
+    # Each account honors its own writes flag: GTR_ENABLE_WRITES=true makes it writable,
+    # AQF has no flag so it defaults to read-only. Profiles are not forced read-only.
+    assert values['GTR'].enable_writes
+    assert not values['AQF'].enable_writes
     with path.open('a') as f:
         f.write(''.join(f'B{i}_PLATFORM_URL=https://b{i}.example\n' for i in range(3)))
     assert len(load_profiles(path)) == 5
@@ -39,7 +42,6 @@ def test_simultaneous_brokers_with_same_ids_remain_isolated(settings):
     apis = {}
     class API:
         def __init__(self, config):
-            assert not config.enable_writes
             self.config, self.closed = config, False
             self.connection = SimpleNamespace(account_id=config.account_id)
             apis[config.platform_url] = self
