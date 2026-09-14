@@ -55,14 +55,15 @@ def test_engine_reads_the_destination_limits_before_a_live_write_but_not_for_pap
 
 def test_engine_resolves_order_type_from_map_source_or_destination_quote():
     engine = SignalEngine(lane(), symbols("SOURCE"))
-    assert engine.decide(parse_signal(raw(orderType="STOP")), context()).order_type == "STOP"
+    # A sell stop rests below the bid (99): 98 is a valid stop, 100 would trigger on contact.
+    assert engine.decide(parse_signal(raw(orderType="STOP", entry=98, stopLoss=103, takeProfit=93)), context()).order_type == "STOP"
     with pytest.raises(Refusal, match="no supported order type"):
         engine.decide(parse_signal(raw()), context())
     entry = SignalEngine(lane(), symbols("ENTRY"))
     assert entry.decide(parse_signal(raw(side="long", entry=98, stopLoss=95, takeProfit=105)), context()).order_type == "LIMIT"
     assert entry.decide(parse_signal(raw(side="long", entry=103, stopLoss=95, takeProfit=110)), context()).order_type == "STOP"
     assert entry.decide(parse_signal(raw(side="short", entry=97, stopLoss=105, takeProfit=90)), context()).order_type == "STOP"
-    assert entry.decide(parse_signal(raw(orderType="STOP")), context()).order_type == "STOP"   # the sender's own type wins
+    assert entry.decide(parse_signal(raw(orderType="STOP", entry=98, stopLoss=103, takeProfit=93)), context()).order_type == "STOP"   # the sender's own type wins
     with pytest.raises(Refusal, match="Paper preview"):
         entry.decide(parse_signal(raw()), context(mode="paper"))
     stale = Broker()
@@ -71,6 +72,44 @@ def test_engine_resolves_order_type_from_map_source_or_destination_quote():
         entry.decide(parse_signal(raw()), context(api=stale))
     with pytest.raises(Refusal, match="ambiguous"):
         entry.decide(parse_signal(raw(entry=99)), context())   # a SELL at the bid
+
+
+def test_lane_grades_gate_graded_signals_and_ignore_ungraded_ones():
+    engine = SignalEngine(lane(source="R01", accepted_grades=["PRIME", "STRONG"]), symbols())
+    with pytest.raises(Refusal, match="Grade WEAK is not accepted"):
+        engine.decide(parse_signal(raw(source="R01", grade="WEAK", detail="resting limit at range edge")), context())
+    plan = engine.decide(parse_signal(raw(source="R01", grade="PRIME", detail="resting limit at range edge")), context())
+    assert plan.order_type == "LIMIT"
+    chain = SignalEngine(lane(accepted_grades=["PRIME"]), symbols())
+    assert chain.decide(parse_signal(raw()), context()).order_type == "LIMIT"   # a chain signal has no grade
+
+
+def test_lane_dollar_risk_sizes_lots_from_the_stop_distance_and_contract_size():
+    engine = SignalEngine(lane(risk_usd=Decimal("5")), symbols())
+    plan = engine.decide(parse_signal(raw(entry=100, stopLoss=105, takeProfit=95)), context())
+    assert plan.volume == Decimal("1.0")            # 5 / (5 points * contract 1) = 1.0, step 0.1
+    plan = engine.decide(parse_signal(raw(entry=100, stopLoss=160, takeProfit=40)), context())
+    assert plan.volume == Decimal("0.1")            # 0.083 floors below the minimum, so the minimum
+    paper = engine.decide(parse_signal(raw()), context(mode="paper", api=None, verified=False))
+    assert paper.volume == Decimal("0.2")           # paper has no instrument record: the map's lots
+
+
+def test_a_resting_order_already_through_the_market_is_refused_on_a_fresh_quote():
+    engine = SignalEngine(lane(), symbols())
+    # quote 99/101: a SELL limit at 98 sits below the bid and would fill on contact.
+    with pytest.raises(Refusal, match="through the market"):
+        engine.decide(parse_signal(raw(entry=98, stopLoss=103, takeProfit=93)), context())
+    # a BUY limit at 102 is above the ask: same refusal.
+    with pytest.raises(Refusal, match="through the market"):
+        engine.decide(parse_signal(raw(side="long", entry=102, stopLoss=97, takeProfit=107)), context())
+    # a SELL stop at 100 is above the bid 99: it would trigger at once.
+    with pytest.raises(Refusal, match="through the market"):
+        SignalEngine(lane(), symbols("STOP")).decide(parse_signal(raw()), context())
+    # a stale quote stands the check down rather than judging on it; paper never reads one.
+    stale = Broker()
+    stale.quote_time -= 60000
+    assert engine.decide(parse_signal(raw(entry=98, stopLoss=103, takeProfit=93)), context(api=stale)).price == Decimal("98")
+    assert engine.decide(parse_signal(raw(entry=98, stopLoss=103, takeProfit=93)), context(mode="paper")).price == Decimal("98")
 
 
 def test_attribution_is_checked_by_the_signal_shape_inside_the_decision():

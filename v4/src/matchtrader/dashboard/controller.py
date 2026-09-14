@@ -28,6 +28,7 @@ from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_controls import CopyControls, load_controls, save_controls
 from .broker_session import BrokerSession
 from .copy_settings import CopySettings, load_settings, save_settings
+from ..signals import SymbolMapStore
 from .p01_log import P01Log
 from .signal_copy import SignalCopy
 
@@ -103,7 +104,12 @@ class DashboardController:
         # Signal copying starts disarmed on every process start; only an explicit action arms it.
         # A cancel/closed signal unwinds against the capture ledger (the trades the owner sent)
         # regardless of that switch or the copy controls: see capture/unwind.py.
-        self.signal_copy = SignalCopy(data_dir / 'relay', ledger=self.native_store)
+        self.symbol_store = SymbolMapStore(data_dir / 'relay' / 'symbol-map.json')
+        self.signal_copy = SignalCopy(data_dir / 'relay', ledger=self.native_store, symbols=self.symbol_store)
+        # The R01 lane: its own settings, record and route, fed from the R01 ledger rows the capture
+        # worker already tails. It shares the symbol map and the Paper/Live master switch.
+        self.r01_copy = SignalCopy(data_dir / 'relay' / 'r01', ledger=self.native_store, symbols=self.symbol_store)
+        self.r01_episodes = {}
         self.p01_log = P01Log(p01_log_path or os.environ.get('AQF_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
         # Copy controls default to the safe state (paper, every source off) and are the only
         # gate on manual dispatch; PAMM publishing reads the forwarder lazily because the
@@ -489,15 +495,21 @@ class DashboardController:
                             )
                         else:
                             row = payload['record']
-                            self.source_signals.append({
+                            entry = {
                                 'id': f'csv:{offset}', 'trade_id': row.get('label'), 'symbol': row.get('symbol'),
                                 'side': row.get('side'), 'kind': row.get('kind'), 'action': 'OBSERVE',
                                 'price': row.get('entry'), 'sl': row.get('sl'), 'tp': row.get('tp'),
+                                'grade': row.get('grade'), 'stamp': row.get('stamp'),
                                 'emitted_at': row.get('utc'), 'received_at': datetime.now(UTC).isoformat(),
                                 'decision': 'observation', 'reason': 'R01 source ledger observation',
                                 'meaning': {'source': {'code': 'R01', 'label': 'R01'},
                                             'opened': {'state': 'unconfirmed', 'label': 'Source report'}},
-                            })
+                            }
+                            decision = self._copy_r01_row(row, payload.get('extra_fields') or [])
+                            if decision:
+                                entry['copy_result'] = decision
+                                entry['reason'] += ' | R01 lane: ' + str(decision.get('reason', ''))[:160]
+                            self.source_signals.append(entry)
                             self.native_store.notify_stream()
                     if self.api and self.native.route and monotonic() >= next_reconcile:
                         next_reconcile = monotonic() + 15
@@ -588,6 +600,100 @@ class DashboardController:
                 row['copy_result'] = outcomes[0][1] if len(outcomes) == 1 else {
                     'status': 'multiple', 'reason': '; '.join(f'{lb}: {r["status"]}' for lb, r in outcomes)}
                 row['reason'] += ' | Cancel: ' + '; '.join(f'{lb} {r["status"]}: {r["reason"]}' for lb, r in outcomes)
+
+    # ---- R01 lane ----------------------------------------------------------------------------
+    @staticmethod
+    def _r01_timestamp(value):
+        """R01 writes seven fractional digits; the signal shape takes six."""
+        text = str(value or '')
+        if '.' in text:
+            head, _, tail = text.partition('.')
+            digits = ''.join(c for c in tail if c.isdigit())
+            text = f"{head}.{digits[:6].ljust(6, '0')}{tail[len(digits):]}"
+        return text
+
+    def _copy_r01_row(self, record, extra_fields):
+        """Turn one fresh R01 ledger row into the lane's signals and decide them.
+
+        An intent opens an *episode* for its label: the same label is re-minted many times by R01
+        and by more than one instance, so the lifecycle the copier tracks is label plus intent time.
+        A duplicate intent (same label, same prices) is ignored; a re-priced one cancels the previous
+        episode and opens a new one; cancelled and modified rows act on the current episode; a regrade
+        below the accepted grades retracts it. touched rows are observations."""
+        config = self.r01_copy.config
+        if not config or config.source != 'R01':
+            return None
+        kind, label, symbol = record.get('kind'), record.get('label'), record.get('symbol')
+        if not label or not symbol or kind not in {'intent', 'cancelled', 'modified', 'regrade'}:
+            return None
+        lane = self.r01_copy
+        lane.copy_mode = self.copy_controls.mode
+        lane.armed = bool(config) and self.running
+        lane.armed_at = self.copy_mode_since
+        prices = tuple(record.get(k) for k in ('entry', 'sl', 'tp'))
+        grade = record.get('grade', '') or ''
+        current = self.r01_episodes.get(label)
+        machine = platform.node()
+
+        def signal(episode, signal_kind, reason=''):
+            digest = hashlib.sha256(json.dumps([episode, signal_kind, record.get('utc'), reason]).encode()).hexdigest()
+            return {'clientEventId': 'r01-' + digest[:32], 'machineId': machine, 'source': 'R01', 'kind': signal_kind,
+                    'label': episode, 'timestampUtc': self._r01_timestamp(record.get('utc')),
+                    'symbol': symbol, 'side': record.get('side', ''),
+                    'entry': record.get('entry') or 0, 'stopLoss': record.get('sl') or 0, 'takeProfit': record.get('tp') or 0,
+                    'grade': grade, 'stamp': record.get('stamp', '') or '', 'rfx': record.get('rfx', '') or '',
+                    'arm': (extra_fields[0] if extra_fields else '') or '', 'detail': record.get('detail', '') or '',
+                    'reason': reason}
+
+        signals = []
+        if kind == 'intent':
+            if current and current['prices'] == prices:
+                current['duplicates'] += 1
+                return {'status': 'duplicate', 'reason': 'Same level already armed for this label (another R01 instance)'}
+            if current:
+                signals.append(signal(current['episode'], 'cancelled', 're-priced by a new intent'))
+            episode = f"{label}#{record.get('utc')}"
+            self.r01_episodes[label] = {'episode': episode, 'prices': prices, 'grade': grade, 'duplicates': 0}
+            signals.append(signal(episode, 'intent'))
+        elif kind == 'cancelled':
+            if not current:
+                return None
+            signals.append(signal(current['episode'], 'cancelled', record.get('detail', '')))
+            del self.r01_episodes[label]
+        elif kind == 'modified':
+            if not current:
+                return None
+            signals.append(signal(current['episode'], 'cancelled', 'modified upstream'))
+            episode = f"{label}#{record.get('utc')}"
+            self.r01_episodes[label] = {'episode': episode, 'prices': prices, 'grade': grade, 'duplicates': 0}
+            signals.append(signal(episode, 'intent'))
+        elif kind == 'regrade':
+            if not current:
+                return None
+            current['grade'] = grade
+            if config.accepted_grades and grade not in config.accepted_grades and config.retract_on_downgrade:
+                signals.append(signal(current['episode'], 'cancelled', f'retracted on downgrade to {grade}'))
+                del self.r01_episodes[label]
+            else:
+                return {'status': 'observed', 'reason': f'regrade to {grade}; copy unchanged'}
+        try:
+            results = lane.receive(signals, self.api, self.selected, self._destination_verified())['results']
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as error:
+            return {'status': 'uncertain', 'reason': f'R01 lane processing failed ({type(error).__name__})'}
+        return results[-1] if len(results) == 1 else {
+            'status': results[-1].get('status'), 'reason': '; '.join(f"{s['kind']} {r.get('status')}: {r.get('reason')}"
+                                                                    for s, r in zip(signals, results, strict=True))}
+
+    def configure_r01(self, payload):
+        """The R01 lane's own settings: source is fixed to R01 and the ledger is its only feed."""
+        with self.lifecycle, self.lock:
+            if not self.interactive_copying:
+                raise ValueError('Interactive copying is disabled')
+            if not isinstance(payload, dict) or payload.get('source', 'R01') != 'R01':
+                raise ValueError('The R01 lane copies R01 ledger intents only; source must be R01')
+            if payload.get('p01_log_enabled') or payload.get('additional_sources'):
+                raise ValueError('The R01 lane accepts no P01 or panel sources')
+            return self.r01_copy.configure({**payload, 'source': 'R01', 'symbols': {}})
 
     def _p01_labels_with_live_copies(self, machine):
         """Labels of P01 log intents this owner sent to the selected account and has not yet cancelled."""

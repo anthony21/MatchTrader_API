@@ -15,6 +15,16 @@ def test_symbol_map_is_a_plain_lookup_that_round_trips_its_own_file(tmp_path):
     assert len(SymbolMap.load(tmp_path / "missing.json")) == 0
 
 
+def test_one_store_serves_every_lane_and_persists_each_replacement(tmp_path):
+    from matchtrader.signals import SymbolMapStore
+    store = SymbolMapStore(tmp_path / "symbol-map.json")
+    assert len(store.map) == 0
+    store.replace(symbols())
+    other_view = store                                     # a second lane holds the same object
+    assert other_view.map.lookup("US TECH 100").destination == "NAS100"
+    assert SymbolMapStore(tmp_path / "symbol-map.json").map.lookup("US TECH 100").lots == Decimal("0.2")
+
+
 def test_a_mapping_needs_a_destination_a_positive_size_and_a_known_order_handling():
     with pytest.raises(ValueError):
         SymbolMapping(destination="", lots=Decimal("0.1"))

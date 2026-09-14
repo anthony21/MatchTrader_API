@@ -9,7 +9,7 @@ the destination's own instrument limits.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from .shapes import BaseSignal
 
@@ -96,6 +96,9 @@ class SignalEngine:
             raise Refusal("A later ended lifecycle was already recorded")
         if ctx.already_attempted:
             raise Refusal("This scoped lifecycle already has a broker attempt; no duplicate order")
+        grade, accepted = getattr(signal, "grade", ""), getattr(lane, "accepted_grades", None) or []
+        if accepted and grade and grade not in accepted:
+            raise Refusal(f"Grade {grade} is not accepted by the lane")
         mapping = self.symbols.lookup(signal.symbol)
         if not mapping:
             raise Refusal("No configured symbol mapping")
@@ -106,7 +109,11 @@ class SignalEngine:
         order_type = self._order_type(signal, mapping, side, ctx)
         lots = mapping.lots
         if not ctx.paper:
-            self._check_instrument(ctx.api, mapping.destination, lots, side, order_type)
+            info = self._instrument(ctx.api, mapping.destination)
+            lots = self._lots(lane, mapping, signal, info)
+            self._check_limits(info, lots, side)
+            if order_type != "MARKET":
+                self._check_not_through_market(ctx, mapping.destination, side, order_type, signal.entry)
         return OrderPlan(instrument=mapping.destination, side=side, order_type=order_type, volume=lots,
                          price=None if order_type == "MARKET" else signal.entry,
                          sl=signal.stopLoss, tp=signal.takeProfit, label=signal.label, scope=signal.scope)
@@ -149,19 +156,66 @@ class SignalEngine:
         return "LIMIT" if (below if side == "BUY" else not below) else "STOP"
 
     @staticmethod
-    def _check_instrument(api, symbol, lots, side, order_type):
-        """The destination's own limits, read from the broker before any write."""
+    def _instrument(api, symbol):
+        """The destination's own instrument record, read from the broker before any write."""
+        found = [i for i in api.instruments() if getattr(i, "symbol", None) == symbol]
+        if len(found) != 1:
+            raise Refusal("Destination instrument is not uniquely available")
+        return found[0].model_dump()
+
+    @staticmethod
+    def _lots(lane, mapping, signal, info):
+        """The map's fixed lots, or the lane's dollar risk divided by the stop distance in contract units."""
+        risk = getattr(lane, "risk_usd", None)
+        if not risk:
+            return mapping.lots
         try:
-            found = [i for i in api.instruments() if getattr(i, "symbol", None) == symbol]
-            if len(found) != 1:
-                raise Refusal("Destination instrument is not uniquely available")
-            info = found[0].model_dump()
+            contract = Decimal(str(info.get("contractSize") or 1))
+            step, minimum = (Decimal(str(info[k])) for k in ("volumeStep", "volumeMin"))
+        except (KeyError, TypeError):
+            raise Refusal("Destination contract size could not be verified for risk sizing") from None
+        distance = abs(signal.entry - signal.stopLoss)
+        if distance <= 0 or contract <= 0:
+            raise Refusal("Risk sizing needs a positive stop distance")
+        lots = (Decimal(risk) / (distance * contract)).quantize(step, rounding=ROUND_DOWN)
+        return max(lots, minimum)
+
+    @staticmethod
+    def _check_limits(info, lots, side):
+        try:
             minimum, maximum, step = (Decimal(str(info[k])) for k in ("volumeMin", "volumeMax", "volumeStep"))
-            if step <= 0 or not minimum <= lots <= maximum or lots % step != 0:
-                raise Refusal("Quantity violates destination lot limits/step")
-            if info.get("closeOnly"):
-                raise Refusal("Destination instrument is close-only")
-            if info.get("longOnly") and side == "SELL":
-                raise Refusal("Destination instrument is long-only")
         except (KeyError, TypeError):
             raise Refusal("Destination instrument limits could not be verified") from None
+        if step <= 0 or not minimum <= lots <= maximum or lots % step != 0:
+            raise Refusal("Quantity violates destination lot limits/step")
+        if info.get("closeOnly"):
+            raise Refusal("Destination instrument is close-only")
+        if info.get("longOnly") and side == "SELL":
+            raise Refusal("Destination instrument is long-only")
+
+    @staticmethod
+    def _check_not_through_market(ctx, symbol, side, order_type, level):
+        """A resting order whose level is already through the market executes on contact at whatever
+        the book is, with the stop left where it was sent. That is not the order that was asked for.
+        Judged on a fresh destination quote only; without one the check stands down."""
+        quotes_of = getattr(ctx.api, "quotes", None)
+        if quotes_of is None:
+            return
+        try:
+            quotes = [q for q in quotes_of(symbols=symbol) if getattr(q, "symbol", None) == symbol]
+        except Exception:
+            return
+        if len(quotes) != 1:
+            return
+        quote = quotes[0]
+        stamp = getattr(quote, "timestampMs", None) or (getattr(quote, "timestampSec", None) or 0) * 1000
+        if not stamp or not -5000 <= ctx.now.timestamp() * 1000 - stamp <= 10000:
+            return
+        bid, ask = Decimal(str(quote.bid)), Decimal(str(quote.ask))
+        if order_type == "STOP":
+            through = level <= ask if side == "BUY" else level >= bid
+        else:
+            through = level >= ask if side == "BUY" else level <= bid
+        if through:
+            raise Refusal(f"Level {level} is already through the market ({bid}/{ask}); "
+                          "a resting order would execute on contact")

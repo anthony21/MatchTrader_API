@@ -273,10 +273,13 @@ def test_p01_lowercase_types_preserved_and_scoped_pending_cancel(tmp_path):
     service = entry_service(tmp_path)
     api = PendingBroker()
     try:
-        original = packet(source='panel', label='P01RR_1_1', orderType='stop', connectionName='')
+        # A sell stop must rest below the bid (99 here); at 100 it would trigger on contact and is refused.
+        original = packet(source='panel', label='P01RR_1_1', orderType='stop', connectionName='',
+                          entry=98, stopLoss=103, takeProfit=93)
         assert service.receive([original], api, 'demo', True)['results'][0]['status'] == 'accepted'
         assert api.calls[0]['type'] == 'STOP'
-        cancel = packet(source='panel', label='P01RR_1_1', orderType='stop', kind='cancelled', clientEventId='cancel', connectionName='')
+        cancel = packet(source='panel', label='P01RR_1_1', orderType='stop', kind='cancelled', clientEventId='cancel',
+                        connectionName='', entry=98, stopLoss=103, takeProfit=93)
         assert service.receive([cancel], api, 'demo', True)['results'][0]['status'] == 'accepted'
         assert api.cancellations == [{'instrument':'NAS100', 'id':'order-1', 'orderSide':'SELL', 'type':'STOP'}]
         service.receive([{**cancel, 'clientEventId':'cancel-again'}], api, 'demo', True)

@@ -24,6 +24,18 @@ class SymbolMapping(BaseModel):
     order_type: Literal["MARKET", "LIMIT", "STOP", "SOURCE", "ENTRY"] = "SOURCE"
 
 
+class SymbolMapStore:
+    """One symbol map shared by every lane: loaded from one file, replaced through one call."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.map = SymbolMap.load(self.path)
+
+    def replace(self, symbols):
+        self.map = symbols
+        symbols.save(self.path)
+
+
 class SymbolMap(RootModel[dict[str, SymbolMapping]]):
     def lookup(self, symbol) -> SymbolMapping | None:
         return self.root.get(symbol)

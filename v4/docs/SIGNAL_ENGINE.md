@@ -71,6 +71,44 @@ the broker returned an identity (or `OK` for a cancel); any exception or unrecog
 is `uncertain`. The request and reply are appended to the capture raw log when the owner has
 one.
 
+## Lanes
+
+A lane is one `SignalCopy`: its own settings file, its own durable record, its own routes,
+deciding through the same engine and dispatching through the same dispatcher. Every lane
+shares one symbol map (`SymbolMapStore`) and the Paper/Live master switch.
+
+| Lane | Fed by | Settings and feed routes |
+| --- | --- | --- |
+| Strategy signal lane (P01 log, X17 relay, panel) | `P01_RR.log` and `POST /capture/signals` | `/api/signal-copy-settings`, `/api/signal-copy-events` |
+| R01 lane | the R01 ledger rows the capture worker already tails | `/api/r01-lane`, `/api/r01-events` |
+
+### The R01 lane
+
+R01 writes the same label many times (re-mints, and more than one instance writing one
+file), so the lifecycle the copier tracks is an **episode**: label plus the intent's
+timestamp. The controller keeps the current episode per label:
+
+- `intent`: same label and prices as the current episode is a duplicate and is ignored;
+  different prices cancel the current episode and open a new one; no episode opens one.
+- `cancelled`: cancels the current episode and closes it.
+- `modified`: cancels the current episode and opens a new one at the new prices.
+- `regrade`: with `accepted_grades` set and `retract_on_downgrade` on, a grade outside
+  the list cancels the current episode; otherwise it is recorded and the copy stands.
+- `touched`: an observation, nothing is sent.
+
+Each row becomes an `R01Signal` (grade, stamp, rfx, arm bucket and detail ride along, and
+the order type comes from the detail text) and goes through `decide()` like any other. The
+lane adds two settings the engine honours for any lane: `accepted_grades`, refusing a
+graded signal outside the list, and `risk_usd`, sizing lots as risk divided by the stop
+distance in contract units, read from the broker's instrument record, floored to the
+volume step and never below the minimum; without it the map's lots apply. Decisions are
+stamped on the ledger observation row on the bridge page and kept in the lane's own feed.
+
+Before any live pending write, every lane's decision also reads a fresh destination quote
+and refuses a level that is already through the market (a LIMIT at or past the touch
+price, a STOP at or before it), because the venue would execute it on contact with the
+stop left where it was sent. Without a fresh quote the check stands down.
+
 ## What `signal_copy.py` still owns
 
 Receiving batches, deduplication by machine plus client event id, the durable record of

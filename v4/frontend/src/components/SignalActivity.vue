@@ -1,18 +1,20 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { request } from '../api.js'
+const props = defineProps({ endpoint: { type: String, default: 'signal-copy-events' },
+  title: { type: String, default: 'Recent signal activity' } })
 const events = ref([]), error = ref(''), busy = ref(false)
 async function refresh() {
   busy.value = true; error.value = ''
-  try { events.value = (await request('signal-copy-events')).events || [] }
+  try { events.value = (await request(props.endpoint)).events || [] }
   catch (err) { error.value = err.message }
   finally { busy.value = false }
 }
 onMounted(refresh)
 </script>
 <template>
-  <section class="card signal-activity" aria-label="Recent signal activity">
-    <h2>Recent signal activity</h2><button :disabled="busy" @click="refresh">Refresh signal activity</button>
+  <section class="card signal-activity" :aria-label="title">
+    <h2>{{ title }}</h2><button :disabled="busy" @click="refresh">Refresh signal activity</button>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="!events.length">No signal decisions recorded.</p>
     <article v-for="row in events" :key="`${row.machineId}:${row.clientEventId}`">
       <strong>{{ row.kind }} · {{ row.status }}</strong><p>{{ row.reason }}</p>

@@ -448,6 +448,16 @@ def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_
     assert controller.signal_copy.symbols.lookup('EURUSD').destination == 'EURUSD'
     assert json.loads(call(server, '/api/signal-copy-settings', headers=headers)[1])['config']['symbols']['US TECH 100']['fixed_lots'] == '0.3'
     assert call(server, '/api/symbol-map', 'POST', {}, headers)[0] == 400
+    # The R01 lane has its own settings and feed routes, sharing only the symbol map.
+    assert call(server, '/api/r01-lane')[0] == 401 and call(server, '/api/r01-events')[0] == 401
+    status, raw = call(server, '/api/r01-lane', headers=headers)
+    assert status == 200 and json.loads(raw)['config'] is None
+    lane = {'machine_id': 'qt', 'destination_account': controller.selected, 'exclusive_destination': True,
+            'accepted_grades': ['PRIME', 'STRONG'], 'risk_usd': '5'}
+    status, raw = call(server, '/api/r01-lane', 'POST', lane, headers)
+    assert status == 200 and json.loads(raw)['config']['source'] == 'R01'
+    assert json.loads(call(server, '/api/r01-events', headers=headers)[1]) == {'events': []}
+    assert call(server, '/api/r01-lane', 'POST', {**lane, 'source': 'chain'}, headers)[0] == 400
     assert call(server, '/api/signal-copying', 'POST', {'enabled': True}, headers)[0] == 200
     assert controller.signal_copy.armed
     controller.start_capture()

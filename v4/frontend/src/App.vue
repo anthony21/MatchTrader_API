@@ -47,6 +47,7 @@ const busy = ref(false)
 const activeAction = ref('')
 const error = ref('')
 const signalsExpanded = ref(false)
+const r01Expanded = ref(false)
 const streamStatus = ref('connecting')
 let disposed = false, stopStream, brokerTimer
 
@@ -190,11 +191,16 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
           <summary style="cursor:pointer">Recent signal activity</summary>
           <SignalActivity v-if="signalsExpanded" />
         </details>
+        <details class="card" style="margin-top:20px;padding:20px" @toggle="r01Expanded = $event.target.open">
+          <summary style="cursor:pointer">Recent R01 lane activity</summary>
+          <SignalActivity v-if="r01Expanded" endpoint="r01-events" title="Recent R01 lane activity" />
+        </details>
       </template>
       <template v-else-if="page === 'settings'">
         <CopyControls :pushed="copyControls" />
         <CopySettings :state="state" />
         <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" /></details>
+        <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" endpoint="r01-lane" title="R01 lane" r01 /></details>
       </template>
       <SymbolMap v-else-if="page === 'symbols'" :state="state" />
       <template v-else>

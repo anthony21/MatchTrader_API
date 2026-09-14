@@ -27,12 +27,35 @@ test('saves the lane alone, without symbols, and disables editing while live', a
   await flushPromises()
   await wrapper.find('form').trigger('submit'); await flushPromises()
   const { symbols, ...lane } = config
-  expect(request).toHaveBeenCalledWith('signal-copy-settings', lane)
+  expect(request).toHaveBeenCalledWith('signal-copy-settings', expect.objectContaining(lane))
+  expect(request.mock.calls.at(-1)[1]).not.toHaveProperty('symbols')
+  expect(request.mock.calls.at(-1)[1]).not.toHaveProperty('risk_usd')
   expect(request).not.toHaveBeenCalledWith('signal-copying', { enabled: true })
   expect(request).not.toHaveBeenCalledWith('symbol-map', expect.anything())
   expect(wrapper.text()).not.toContain('Enable live mode')
   await wrapper.setProps({ state: { accounts: [{ id: 'demo' }], signal_copying: true } })
   expect(wrapper.find('fieldset').element.disabled).toBe(true)
+  wrapper.unmount()
+})
+
+test('the R01 lane posts to its own route with source fixed, grades and dollar risk, and no P01 controls', async () => {
+  request.mockReset()
+  request.mockImplementation(async (path, body) => body ?? { config: null, live: false })
+  const wrapper = mount(SignalCopySettings, { props: { state: { account_id: 'demo', accounts: [{ id: 'demo' }], p01_log: { machine: 'HCAMM-MIKE' } },
+    endpoint: 'r01-lane', title: 'R01 lane', r01: true } })
+  await flushPromises()
+  expect(request).toHaveBeenCalledWith('r01-lane')
+  expect(wrapper.text()).not.toContain('Copy P01 chart intents')
+  expect(wrapper.findAll('input').some(input => input.element.value === 'R01' && input.element.readOnly)).toBe(true)
+  expect(wrapper.findAll('input').some(input => input.element.value === 'HCAMM-MIKE')).toBe(true)
+  await wrapper.findAll('label').find(label => label.text() === 'PRIME').find('input').setValue(true)
+  await wrapper.findAll('label').find(label => label.text() === 'STRONG').find('input').setValue(true)
+  await wrapper.findAll('input[type=number]')[0].setValue('5')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(request).toHaveBeenLastCalledWith('r01-lane', expect.objectContaining({
+    source: 'R01', machine_id: 'HCAMM-MIKE', destination_account: 'demo', accepted_grades: ['PRIME', 'STRONG'],
+    retract_on_downgrade: true, risk_usd: '5', exclusive_destination: true }))
+  expect(request).not.toHaveBeenCalledWith('signal-copy-settings', expect.anything())
   wrapper.unmount()
 })
 

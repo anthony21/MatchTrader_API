@@ -8,9 +8,9 @@ The engine owns every validation. The dispatcher owns the broker call. Nothing e
 from .dispatch import BrokerDispatcher, Outcome
 from .engine import Context, OrderPlan, Refusal, SignalEngine
 from .shapes import BaseSignal, ChainSignal, P01Signal, R01Signal, parse_signal
-from .symbols import SymbolMap, SymbolMapping
+from .symbols import SymbolMap, SymbolMapping, SymbolMapStore
 
 __all__ = [
     "BaseSignal", "BrokerDispatcher", "ChainSignal", "Context", "OrderPlan", "Outcome", "P01Signal",
-    "R01Signal", "Refusal", "SignalEngine", "SymbolMap", "SymbolMapping", "parse_signal",
+    "R01Signal", "Refusal", "SignalEngine", "SymbolMap", "SymbolMapStore", "SymbolMapping", "parse_signal",
 ]

@@ -18,9 +18,13 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..capture import unwind
-from ..signals import BrokerDispatcher, Context, Refusal, SignalEngine, SymbolMap, SymbolMapping, parse_signal
+from ..signals import (
+    BrokerDispatcher, Context, Refusal, SignalEngine, SymbolMap, SymbolMapping, SymbolMapStore, parse_signal,
+)
 from ..signals.shapes import BaseSignal as Signal  # noqa: F401  (the base shape, for callers that build one)
 from .copy_settings import save_settings
+
+GRADES = ('PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID')
 
 
 class SignalSymbol(BaseModel):
@@ -47,6 +51,11 @@ class SignalSettings(BaseModel):
     p01_log_enabled: bool = False
     additional_sources: list[Literal['chain', 'panel']] = Field(default_factory=list)
     x17_only: bool = False
+    # Strategy lanes (R01): which ledger grades may open, whether a downgrade below them retracts a
+    # resting copy, and an optional dollar risk per trade that replaces the map's fixed lots.
+    accepted_grades: list[Literal['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']] = Field(default_factory=list)
+    retract_on_downgrade: bool = True
+    risk_usd: Decimal | None = Field(default=None, gt=0)
 
     @model_validator(mode='before')
     @classmethod
@@ -63,15 +72,17 @@ class SignalSettings(BaseModel):
 
 
 class SignalCopy:
-    def __init__(self, directory, ledger=None):
+    """One lane: its settings, its durable record, and the engine and dispatcher it decides through.
+    Several lanes (P01 log, R01 ledger) share one symbol map through a `SymbolMapStore`."""
+
+    def __init__(self, directory, ledger=None, symbols=None):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / 'signal-copy-settings.json'
-        self.symbols_path = directory / 'symbol-map.json'
+        self.symbol_store = symbols if symbols is not None else SymbolMapStore(directory / 'symbol-map.json')
         self.config = SignalSettings.model_validate_json(self.path.read_text()) if self.path.exists() else None
-        self.symbols = SymbolMap.load(self.symbols_path)
         if self.config and self.config.symbols and not len(self.symbols):
-            self.symbols = self.config.symbol_map()   # first load of a file saved before the split
+            self.symbol_store.replace(self.config.symbol_map())   # first load of a file saved before the split
         # The CaptureStore holding the trades the owner sent; cancel/closed signals unwind against it.
         self.ledger = ledger
         self.dispatcher = BrokerDispatcher(raw_log=ledger.raw_log if ledger is not None else None)
@@ -94,6 +105,10 @@ class SignalCopy:
         ''')
         with self.db:
             self.db.execute("UPDATE signals SET decision='uncertain',reason='Interrupted write; no automatic retry' WHERE decision='dispatching'")
+
+    @property
+    def symbols(self):
+        return self.symbol_store.map
 
     @property
     def engine(self):
@@ -123,8 +138,7 @@ class SignalCopy:
             if self.armed and self.copy_mode != 'paper':
                 raise ValueError('Turn live signal copying off before editing settings')
             if value.symbols:
-                self.symbols = value.symbol_map()
-                self.symbols.save(self.symbols_path)
+                self.symbol_store.replace(value.symbol_map())
             lane = value.model_copy(update={'symbols': {}})
             save_settings(self.path, lane)
             self.config = lane
@@ -138,8 +152,7 @@ class SignalCopy:
         with self.lock:
             if self.armed and self.copy_mode != 'paper':
                 raise ValueError('Turn live signal copying off before editing settings')
-            self.symbols = symbols
-            self.symbols.save(self.symbols_path)
+            self.symbol_store.replace(symbols)
             return self.symbols.model_dump(mode='json')
 
     def arm(self, enabled):
