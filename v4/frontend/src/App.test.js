@@ -139,7 +139,8 @@ test('Trading bridge hides login controls but keeps status grid, token panel, an
   expect(wrapper.findAll('button').some(b => b.text() === 'Log in')).toBe(false)
   expect(wrapper.findComponent(AccountControls).props('selected')).toBe('123')
   expect(wrapper.text()).toContain('Automatic dispatch off')
-  expect(wrapper.text()).toContain('TradingBox preview')
+  // enabled but not live is not the "on" state; the pill shows off until both are set.
+  expect(wrapper.find('[aria-label="TradingBox forwarding"]').text()).toContain('TradingBox off')
   expect(wrapper.find('[aria-label="Service status"]').exists()).toBe(true)
   for (const label of ['BRIDGE', 'BROKER CONNECTION', 'ACCOUNT IN VIEW']) expect(wrapper.text()).toContain(label)
   expect(wrapper.findAll('button').some(b => b.text() === 'Refresh token')).toBe(true)
@@ -271,11 +272,11 @@ test('Verified trades and Paper trades render from pushed sections, stay separat
     verified_trades: { account_id: '123', rows: [ledgerRow] }, paper_sends: { account_id: '123', rows: [paperRow] } })
   const wrapper = mount(App)
   await flushPromises()
-  expect(wrapper.find('.mode-pill').text()).toContain('Copy LIVE')
+  expect(wrapper.find('[aria-label="Copy mode"]').text()).toContain('Copy live')
+  expect(wrapper.find('[aria-label="Copy mode"]').classes()).toContain('copy-live')
   const open = async label => { await wrapper.findAll('button').find(b => b.text() === label).trigger('click'); await flushPromises() }
   await open('Verified trades')
   expect(wrapper.find('h1').text()).toBe('Verified trades')
-  expect(wrapper.find('[aria-label="Copy controls"]').classes()).toContain('live')
   expect(wrapper.find('[aria-label="Verified trades"]').exists()).toBe(true)
   expect(wrapper.text()).toContain('VERIFIEDSYM')
   expect(wrapper.text()).not.toContain('PAPERSYM')
@@ -294,10 +295,11 @@ test('without the ledger sections the new pages render the safe, honest empty st
   push(full)
   const wrapper = mount(App)
   await flushPromises()
-  expect(wrapper.find('.mode-pill').text()).toContain('Copy paper')
+  expect(wrapper.find('[aria-label="Copy mode"]').text()).toContain('Copy paper')
+  // No copy controls reported yet: the copy pill cannot toggle.
+  expect(wrapper.find('[aria-label="Copy mode"]').element.disabled).toBe(true)
   await wrapper.findAll('button').find(b => b.text() === 'Verified trades').trigger('click')
   await flushPromises()
-  expect(wrapper.find('[aria-label="Live or Paper"]').element.disabled).toBe(true)
   expect(wrapper.text()).toContain('No verified trade records for this account yet')
   await wrapper.findAll('button').find(b => b.text() === 'Paper trades').trigger('click')
   await flushPromises()
@@ -317,7 +319,7 @@ test('a page query opens that page directly', async () => {
   window.history.replaceState({}, '', '/')
 })
 
-test('Copy settings exposes the shared broker Live or Paper switch', async () => {
+test('the header Copy pill toggles copy mode paper/live via copy-controls', async () => {
   request.mockImplementation(async (path, body) => {
     if (path === 'copy-controls') return body
     if (path === 'copy-settings') return { inventory: [], csv_limit: 1000 }
@@ -326,12 +328,24 @@ test('Copy settings exposes the shared broker Live or Paper switch', async () =>
   push({ ...full, copy_controls: { mode: 'paper', sources: { P01: true, X17: true, MANUAL: false } } })
   const wrapper = mount(App)
   await flushPromises()
-  await wrapper.findAll('button').find(b => b.text() === 'Copy settings').trigger('click')
-  await flushPromises()
-  const toggle = wrapper.find('[aria-label="Live or Paper"]')
-  expect(toggle.text()).toBe('Paper')
+  const toggle = wrapper.find('[aria-label="Copy mode"]')
+  expect(toggle.text()).toContain('Copy paper')
   await toggle.trigger('click'); await flushPromises()
   expect(request).toHaveBeenCalledWith('copy-controls', { mode: 'live', sources: { P01: true, X17: true, MANUAL: false } })
-  expect(toggle.text()).toBe('Live')
+  expect(toggle.text()).toContain('Copy live')
+  wrapper.unmount()
+})
+
+test('the header TradingBox pill toggles forwarding on and off together', async () => {
+  request.mockImplementation(async (path, body) => body)
+  push({ ...full, status: { ...idle, tradingbox_forwarding: { enabled: false, live: false, url: 'https://tb.example', key_configured: true, generation: 0 } } })
+  const wrapper = mount(App)
+  await flushPromises()
+  const pill = wrapper.find('[aria-label="TradingBox forwarding"]')
+  expect(pill.text()).toContain('TradingBox off')
+  expect(pill.element.disabled).toBe(false)
+  await pill.trigger('click'); await flushPromises()
+  expect(request).toHaveBeenCalledWith('tradingbox-forwarding', { url: 'https://tb.example', enabled: true, live: true })
+  expect(pill.text()).toContain('TradingBox on')
   wrapper.unmount()
 })

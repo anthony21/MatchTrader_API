@@ -12,7 +12,6 @@ import SignalActivity from './components/SignalActivity.vue'
 import RawEvents from './components/RawEvents.vue'
 import LoggingEvents from './components/LoggingEvents.vue'
 import BrokerProfiles from './components/BrokerProfiles.vue'
-import CopyControls from './components/CopyControls.vue'
 import VerifiedTrades from './components/VerifiedTrades.vue'
 import PaperTrades from './components/PaperTrades.vue'
 import SymbolMap from './components/SymbolMap.vue'
@@ -41,6 +40,30 @@ const copyControls = ref(null)
 const verifiedTrades = ref([])
 const paperSends = ref([])
 const copyMode = computed(() => copyControls.value?.mode === 'live' ? 'live' : 'paper')
+const copyLive = computed(() => copyMode.value === 'live')
+// The two header pills toggle TradingBox forwarding and the copy mode. TradingBox "on"
+// means enabled and live together (the same definition the Forwarding switch uses); turning
+// it on needs a destination URL and a configured key. The copy pill flips paper/live and is
+// the control that used to be the "Broker orders" button.
+const tbForwarding = computed(() => state.value.tradingbox_forwarding || {})
+const tbOn = computed(() => !!(tbForwarding.value.enabled && tbForwarding.value.live))
+const tbCanToggle = computed(() => tbOn.value || !!(tbForwarding.value.url && tbForwarding.value.key_configured))
+const pillBusy = ref(false)
+async function toggleTradingBox() {
+  if (pillBusy.value || (!tbOn.value && !tbCanToggle.value)) return
+  pillBusy.value = true; error.value = ''
+  try {
+    const result = await request('tradingbox-forwarding', { url: tbForwarding.value.url || '', enabled: !tbOn.value, live: !tbOn.value })
+    state.value = { ...state.value, tradingbox_forwarding: result }
+  } catch (err) { error.value = err.message } finally { pillBusy.value = false }
+}
+async function toggleCopyMode() {
+  if (pillBusy.value || !copyControls.value) return
+  pillBusy.value = true; error.value = ''
+  try {
+    copyControls.value = await request('copy-controls', { mode: copyLive.value ? 'paper' : 'live', sources: { ...(copyControls.value.sources || {}) } })
+  } catch (err) { error.value = err.message } finally { pillBusy.value = false }
+}
 const requestedPage = new URLSearchParams(window.location.search).get('page')
 const page = ref(PAGES.includes(requestedPage) ? requestedPage : 'bridge')
 const busy = ref(false)
@@ -160,7 +183,10 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <header>
         <div><div class="eyebrow">QUANTOWER → MATCH-TRADER</div><h1>{{ TITLES[page] || 'Trading bridge' }}</h1>
           <p>{{ DESCRIPTIONS[page] || 'Choose your account. Control the connection. Follow every incoming event.' }}</p></div>
-        <div class="mode-pill" :class="{ 'copy-live': copyMode === 'live' }"><span class="small-dot"></span>TradingBox {{ state.tradingbox_forwarding?.live ? 'LIVE' : state.tradingbox_forwarding?.enabled ? 'preview' : 'off' }} · Copy {{ copyMode === 'live' ? 'LIVE' : 'paper' }}</div>
+        <div class="mode-pills">
+          <button type="button" class="mode-pill" :class="{ 'copy-live': tbOn }" role="switch" aria-label="TradingBox forwarding" :aria-checked="tbOn" :disabled="pillBusy || (!tbOn && !tbCanToggle)" :title="!tbOn && !tbCanToggle ? 'Set a TradingBox URL and key on Copy settings first' : ''" @click="toggleTradingBox"><span class="small-dot"></span>TradingBox {{ tbOn ? 'on' : 'off' }}</button>
+          <button type="button" class="mode-pill" :class="{ 'copy-live': copyLive }" role="switch" aria-label="Copy mode" :aria-checked="copyLive" :disabled="pillBusy || !copyControls" @click="toggleCopyMode"><span class="small-dot"></span>Copy {{ copyLive ? 'live' : 'paper' }}</button>
+        </div>
       </header>
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
       <AccountControls v-if="page === 'bridge'" :state="state" :selected="selected" :busy="busy"
@@ -180,7 +206,6 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
       <NativeEvents :events="nativeEvents" :legacy-events="events" :stream-status="streamStatus" :state="state" :busy="busy" />
       </template>
       <template v-else-if="page === 'verified'">
-        <CopyControls :pushed="copyControls" />
         <VerifiedTrades :rows="verifiedTrades" :mode="copyMode" />
       </template>
       <PaperTrades v-else-if="page === 'paper'" :rows="paperSends" :mode="copyMode" />
@@ -198,7 +223,6 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         </details>
       </template>
       <template v-else-if="page === 'settings'">
-        <CopyControls :pushed="copyControls" />
         <CopySettings :state="state" />
         <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" /></details>
         <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" endpoint="r01-lane" title="R01 lane" r01 /></details>
