@@ -193,7 +193,14 @@ class BrokerProfiles:
         if action == 'select':
             return self.select(name, account_id)
         entry = self._entry(name)
-        if action not in {'connect', 'refresh', 'disconnect'}:
+        # 'connect' establishes the session and reads everything once. The granular reads
+        # ('balance', 'orders', 'positions') reuse the saved token and refresh only their own
+        # slice: the front end polls orders and positions on their own cadences and asks for
+        # balance only on demand. No granular read ever logs in or re-connects; the connection
+        # renews the token itself only when its timer is up.
+        PARTS = {'connect': ('balance', 'orders', 'positions'), 'refresh': ('balance', 'orders', 'positions'),
+                 'balance': ('balance',), 'orders': ('orders',), 'positions': ('positions',)}
+        if action != 'disconnect' and action not in PARTS:
             raise ValueError('Unknown profile action')
         with entry['lock']:
             settings = entry['settings']
@@ -207,6 +214,7 @@ class BrokerProfiles:
                         entry['api'].close()
                     entry.update(api=None, state='disconnected', data={}, error='', accounts=[], authentication=None)
                 else:
+                    parts = PARTS[action]
                     if name == PRIMARY_PREFIX:
                         if self.primary.selected != settings.account_id:
                             raise ValueError('Primary account changed')
@@ -217,7 +225,7 @@ class BrokerProfiles:
                         # own broker calls. The REST connection serialises its own requests.
                         with self.primary.lock:
                             api = self.primary.api
-                        self._read(entry, api, settings.account_id)
+                        self._read(entry, api, settings.account_id, parts)
                     else:
                         if action == 'connect' and entry['api'] is None:
                             api = self.factory(settings)
@@ -232,7 +240,7 @@ class BrokerProfiles:
                                 api.close()
                                 raise
                             entry['api'] = api
-                        self._read(entry, entry['api'], settings.account_id)
+                        self._read(entry, entry['api'], settings.account_id, parts)
                     entry.update(state='connected', error='')
             except Exception:
                 # Never retain a successful-looking snapshot after a failed refresh.
@@ -242,18 +250,22 @@ class BrokerProfiles:
             entry['revision'] += 1
         return {'profile': name, 'completed': True}
 
-    def _read(self, entry, api, account_id):
+    def _read(self, entry, api, account_id, parts=('balance', 'orders', 'positions')):
+        """Read only the requested slices with the api's saved token; keep the others as they were."""
         if api is None or api.connection.account_id != account_id:
             raise ValueError('Connect the configured account first')
-        balance = api.balance()
-        orders = api.active_orders()
-        positions = api.open_positions()
-        entry['data'] = {
-            'updated_at': datetime.now(UTC).isoformat(),
-            'balance': records([balance], {'balance', 'equity', 'currency', 'margin', 'freeMargin', 'profit', 'netProfit'})[0],
-            'orders': records(orders, {'id', 'symbol', 'side', 'type', 'volume', 'activationPrice', 'stopLoss', 'takeProfit'}),
-            'positions': records(positions, {'id', 'symbol', 'side', 'volume', 'openPrice', 'stopLoss', 'takeProfit', 'profit', 'netProfit'}),
-        }
+        data = dict(entry.get('data') or {})
+        data['updated_at'] = datetime.now(UTC).isoformat()
+        if 'balance' in parts:
+            data['balance'] = records([api.balance()],
+                                      {'balance', 'equity', 'currency', 'margin', 'freeMargin', 'profit', 'netProfit'})[0]
+        if 'orders' in parts:
+            data['orders'] = records(api.active_orders(),
+                                     {'id', 'symbol', 'side', 'type', 'volume', 'activationPrice', 'stopLoss', 'takeProfit'})
+        if 'positions' in parts:
+            data['positions'] = records(api.open_positions(),
+                                        {'id', 'symbol', 'side', 'volume', 'openPrice', 'stopLoss', 'takeProfit', 'profit', 'netProfit'})
+        entry['data'] = data
 
     def closed_history(self, name, payload):
         from .closed_history import read_history

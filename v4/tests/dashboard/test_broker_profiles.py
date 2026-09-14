@@ -83,6 +83,41 @@ def test_primary_reuses_existing_owner_and_blocks_account_mismatch(settings):
     profiles.close()
 
 
+def test_granular_reads_refresh_one_slice_with_the_saved_token_and_never_re_login(settings):
+    calls = {'login': 0, 'balance': 0, 'orders': 0, 'positions': 0}
+
+    class API:
+        def __init__(self, config):
+            self.config, self.closed = config, False
+            self.connection = SimpleNamespace(account_id=config.account_id, session_expires_at=None)
+        def login(self): calls.__setitem__('login', calls['login'] + 1)
+        def balance(self):
+            calls['balance'] += 1
+            return Balance(balance='500', equity='500', currency='USD')
+        def active_orders(self):
+            calls['orders'] += 1
+            return [Order(id='o1', symbol='EURUSD', side='BUY', type='LIMIT', volume='0.1', activationPrice='1.1')]
+        def open_positions(self):
+            calls['positions'] += 1
+            return []
+        def close(self): self.closed = True
+
+    profiles = BrokerProfiles({'GTR': settings.model_copy(update={'account_id': '123'})}, None, api_factory=API)
+    try:
+        profiles.action('GTR', 'connect')                 # one login, reads all three once
+        assert calls == {'login': 1, 'balance': 1, 'orders': 1, 'positions': 1}
+        profiles.action('GTR', 'orders')                  # pending poll: only active_orders
+        assert calls == {'login': 1, 'balance': 1, 'orders': 2, 'positions': 1}
+        profiles.action('GTR', 'positions')               # open poll: only open_positions
+        assert calls == {'login': 1, 'balance': 1, 'orders': 2, 'positions': 2}
+        profiles.action('GTR', 'balance')                 # manual: only balance
+        assert calls == {'login': 1, 'balance': 2, 'orders': 2, 'positions': 2}
+        row = profiles.snapshot()['profiles'][0]          # every slice still present after a partial read
+        assert row['balance']['balance'] == '500' and len(row['orders']) == 1 and row['positions'] == []
+    finally:
+        profiles.close()
+
+
 def test_closed_history_uses_only_the_requested_profile(settings):
     from tests.dashboard.test_closed_history import WINDOW, broker, trade
     profiles = BrokerProfiles({'GTR': settings.model_copy(update={'account_id': '123'})}, None)

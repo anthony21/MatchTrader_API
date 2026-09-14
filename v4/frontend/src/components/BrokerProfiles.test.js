@@ -99,50 +99,63 @@ test('follows the pushed active profile and later pushes without fetching', asyn
   w.unmount()
 })
 
-test('a background refresh never locks or relabels the buttons; only an operator action does', async () => {
+test('balance is never polled; it refreshes only when the operator clicks', async () => {
   vi.useFakeTimers()
-  const working = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'connected', account_id: '1',
-    accounts: [{ id: '1' }], orders: [{ id: 'o1' }], positions: [], revision: 0 }
-  let release
-  request.mockImplementation(() => new Promise(resolve => { release = () => resolve({ profiles: [{ ...working, revision: 1 }] }) }))
-  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [working] } } })
+  const p = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'connected', account_id: '1',
+    accounts: [{ id: '1' }], orders: [], positions: [], balance: { balance: '100', equity: '100', currency: 'USD' }, revision: 0 }
+  request.mockResolvedValue({ profiles: [{ ...p, revision: 1 }] })
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [p], active_profile: 'AQF' } } })
   await flushPromises()
-  await vi.advanceTimersByTimeAsync(5000)          // the background read is now in flight
-  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'refresh' })
-  const refresh = w.findAll('.broker-actions button')[0]
-  expect(refresh.element.disabled).toBe(false)
-  expect(w.find('.login-picker button').text()).not.toBe('Working…')
-  expect(w.find('.refreshing').text()).toContain('Refreshing')
-  release(); await flushPromises()
-  expect(w.find('.refreshing').exists()).toBe(false)
-  // An operator click locks the buttons while it runs.
-  request.mockImplementation(() => new Promise(resolve => { release = () => resolve({ profiles: [{ ...working, revision: 2 }] }) }))
-  await refresh.trigger('click'); await flushPromises()
-  expect(w.findAll('.broker-actions button')[0].element.disabled).toBe(true)
-  release(); await flushPromises()
-  expect(w.findAll('.broker-actions button')[0].element.disabled).toBe(false)
+  // nothing open, so no poll of any kind for a long while
+  await vi.advanceTimersByTimeAsync(30000)
+  expect(request).not.toHaveBeenCalled()
+  // the manual button reads balance only
+  await w.find('.balance-refresh').trigger('click'); await flushPromises()
+  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'balance' })
+  expect(request).toHaveBeenCalledTimes(1)
   w.unmount()
 })
 
-test('refreshes broker data only while a connected profile has something pending or open, then stops', async () => {
+test('pending orders poll every 200ms and open positions every 5s, each only while it has any', async () => {
   vi.useFakeTimers()
-  const working = { profile: 'AQF', connection: 'connected', orders: [{ id: 'o1' }], positions: [], revision: 0 }
-  request.mockResolvedValue({ profiles: [{ ...working, orders: [] }] })
-  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [working] } } })
+  const base = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'connected', account_id: '1',
+    accounts: [{ id: '1' }], orders: [{ id: 'o1' }], positions: [{ id: 'p1' }], revision: 0 }
+  request.mockImplementation(async (_p, body) => ({ profiles: [{ ...base, revision: 1 }] }))
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [base], active_profile: 'AQF' } } })
   await flushPromises()
-  expect(request).not.toHaveBeenCalled()
+  // one 200ms tick: exactly one orders poll, no positions poll yet, no balance
+  await vi.advanceTimersByTimeAsync(200)
+  const actions = () => request.mock.calls.map(c => c[1].action)
+  expect(actions().filter(a => a === 'orders').length).toBe(1)
+  expect(actions()).not.toContain('positions')
+  expect(actions()).not.toContain('balance')
+  // by 5s: orders polled many times (~25), positions once
   await vi.advanceTimersByTimeAsync(5000)
-  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'refresh' })
-  expect(request).toHaveBeenCalledTimes(1)
-  // The broker reported nothing pending or open, so the timer does not re-arm.
-  await vi.advanceTimersByTimeAsync(30000)
-  expect(request).toHaveBeenCalledTimes(1)
-  // A pushed profile with an open position arms it again; a disconnected one does not.
-  await w.setProps({ pushed: { profiles: [{ ...working, orders: [], positions: [{ id: 'p1' }], revision: 2 }] } })
-  request.mockResolvedValue({ profiles: [{ ...working, connection: 'disconnected', orders: [], positions: [], revision: 3 }] })
-  await vi.advanceTimersByTimeAsync(5000)
-  expect(request).toHaveBeenCalledTimes(2)
-  await vi.advanceTimersByTimeAsync(30000)
-  expect(request).toHaveBeenCalledTimes(2)
+  const orders = actions().filter(a => a === 'orders').length
+  const positions = actions().filter(a => a === 'positions').length
+  expect(orders).toBeGreaterThan(15)
+  expect(positions).toBe(1)
+  // when nothing is open, both cadences stop
+  request.mockResolvedValue({ profiles: [{ ...base, orders: [], positions: [], revision: 2 }] })
+  await vi.advanceTimersByTimeAsync(5000)   // let the empties arrive
+  const settled = request.mock.calls.length
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(request.mock.calls.length).toBe(settled)
+  w.unmount()
+})
+
+test('a poll never locks the operator buttons or relabels the login button', async () => {
+  vi.useFakeTimers()
+  const p = { profile: 'AQF', label: 'Aqua', login_status: 'connected', connection: 'connected', account_id: '1',
+    accounts: [{ id: '1' }], orders: [{ id: 'o1' }], positions: [], revision: 0 }
+  let release
+  request.mockImplementation(() => new Promise(resolve => { release = () => resolve({ profiles: [{ ...p, revision: 1 }] }) }))
+  const w = mount(BrokerProfiles, { props: { pushed: { profiles: [p], active_profile: 'AQF' } } })
+  await flushPromises()
+  await vi.advanceTimersByTimeAsync(200)          // an orders poll is now in flight
+  expect(request).toHaveBeenCalledWith('broker-profiles/action', { profile: 'AQF', action: 'orders' })
+  expect(w.findAll('.broker-actions button')[0].element.disabled).toBe(false)
+  expect(w.find('.login-picker button').text()).not.toBe('Working…')
+  release(); await flushPromises()
   w.unmount()
 })
