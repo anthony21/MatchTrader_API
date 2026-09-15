@@ -409,6 +409,39 @@ def test_session_for_resolves_a_destination_across_connected_profiles(settings, 
         controller.close()
 
 
+def test_logged_in_accounts_and_account_view_use_each_account_held_session(settings, tmp_path):
+    from matchtrader.core.settings import PRIMARY_PREFIX
+    from matchtrader.models.balance import Balance
+    from matchtrader.models.position import Position
+
+    class ViewAPI:
+        def __init__(self, account):
+            self.connection = SimpleNamespace(account_id=account)
+        def balance(self):
+            return Balance(balance="100", equity="95", currency="USD")
+        def active_orders(self):
+            return [Order(id="o1", symbol="SPX500", side="BUY", type="LIMIT", volume="0.1", activationPrice="7600")]
+        def open_positions(self):
+            return [Position(id="p1", symbol="SPX500", side="BUY", volume="0.1", openPrice="7600", profit="1", netProfit="1")]
+        def close(self):
+            pass
+
+    controller = DashboardController(settings, tmp_path / 'data')
+    try:
+        controller.broker_profiles = SimpleNamespace(close=lambda: None, names={'GTR': 'BullRush'}, entries={
+            PRIMARY_PREFIX: {'api': None, 'state': 'disconnected'},
+            'GTR': {'api': ViewAPI('644953'), 'state': 'connected',
+                    'settings': SimpleNamespace(account_id='644953', platform_url='https://mtr.gooeytrade.com')}})
+        accounts = controller.logged_in_accounts()
+        assert [a['account_id'] for a in accounts] == ['644953'] and accounts[0]['broker'] == 'BullRush'
+        view = controller.account_view('644953')
+        assert view['balance']['equity'] == '95' and view['orders'][0]['id'] == 'o1' and view['positions'][0]['id'] == 'p1'
+        with pytest.raises(ValueError, match='no live session'):
+            controller.account_view('999')
+    finally:
+        controller.close()
+
+
 def test_a_copy_config_routes_a_matching_wire_signal_to_its_account(settings, tmp_path):
     from datetime import UTC, datetime
 

@@ -473,6 +473,49 @@ class DashboardController:
         api = self._session_for(dest)
         return api, dest, api is not None
 
+    def logged_in_accounts(self):
+        """Every account with a live authenticated session right now: the capture account and each
+        connected broker profile's account. The Selected-account picker chooses among these, and its
+        held tokens serve any read or write for that account with no re-login."""
+        seen, out = set(), []
+        with self.lock:
+            if self.api is not None and self.connection == 'connected' and self.selected:
+                out.append({'account_id': self.selected, 'profile': PRIMARY_PREFIX,
+                            'broker': self.settings.platform_url, 'capture': True})
+                seen.add(self.selected)
+        profiles = self.broker_profiles
+        entries = getattr(profiles, 'entries', None) or {}
+        names = getattr(profiles, 'names', None) or {}
+        for name, entry in entries.items():
+            if name == PRIMARY_PREFIX:
+                continue
+            api, settings = entry.get('api'), entry.get('settings')
+            account = getattr(settings, 'account_id', '') if settings else ''
+            if api is not None and entry.get('state') == 'connected' and account and account not in seen:
+                out.append({'account_id': account, 'profile': name,
+                            'broker': names.get(name) or name, 'capture': False})
+                seen.add(account)
+        return out
+
+    def account_view(self, account_id, parts=('balance', 'orders', 'positions')):
+        """Read one logged-in account through its own held session (uuid, trading token, cookie),
+        with no re-login. This is the endpoint other pages query for the Selected account's data."""
+        from .broker_profiles import records
+        api = self._session_for(account_id)
+        if api is None:
+            raise ValueError('That account has no live session; connect it on the Broker accounts page')
+        data = {'account_id': account_id, 'updated_at': datetime.now(UTC).isoformat()}
+        if 'balance' in parts:
+            data['balance'] = records([api.balance()],
+                                      {'balance', 'equity', 'currency', 'margin', 'freeMargin', 'profit', 'netProfit'})[0]
+        if 'orders' in parts:
+            data['orders'] = records(api.active_orders(),
+                                     {'id', 'symbol', 'side', 'type', 'volume', 'activationPrice', 'stopLoss', 'takeProfit'})
+        if 'positions' in parts:
+            data['positions'] = records(api.open_positions(),
+                                        {'id', 'symbol', 'side', 'volume', 'openPrice', 'stopLoss', 'takeProfit', 'profit', 'netProfit'})
+        return data
+
     def receive_signals(self, payload):
         with self.lock:
             self.signal_copy.copy_mode = self.copy_controls.mode
@@ -991,6 +1034,7 @@ class DashboardController:
                 "positions_at": self.positions_at,
                 "copying": self.native.armed,
                 "copy_configs": [c.model_dump(mode="json") for c in self.copy_config_store.list()],
+                "logged_in_accounts": self.logged_in_accounts(),
                 "route_configured": self.native.route is not None,
                 "csv_export_error": self.native_store.export_error,
                 "reconciliation_message": self.reconciliation_message,

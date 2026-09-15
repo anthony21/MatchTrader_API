@@ -3,7 +3,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { request } from '../api.js'
 // Saved wire-driven copy configurations. Each copies one strategy (its wire machineId + source)
 // to one account, with its own sizing, grades and its own Paper/Live and On/Off. No global copy.
-const props = defineProps({ configs: { type: Array, default: () => [] }, profiles: { type: Array, default: () => [] } })
+const props = defineProps({ configs: { type: Array, default: () => [] }, profiles: { type: Array, default: () => [] },
+  selectedAccount: { type: String, default: '' } })
 const GRADES = ['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']
 const SOURCES = ['r01Auto', 'chain', 'panel']
 const SIZING = [['lots', 'Fixed lots (Symbol map)'], ['dollar', 'Fixed dollar risk'], ['percent', 'Percent of equity']]
@@ -18,7 +19,13 @@ const accounts = computed(() => brokers.value.filter(p => p.profile === form.des
 watch(() => form.destination_broker, () => {
   if (!accounts.value.some(a => a.account_id === form.destination_account)) form.destination_account = ''
 })
-function reset() { Object.assign(form, blank()); editing.value = '' }
+function prefillDestination() {
+  // A new config defaults its destination to the Selected account, so it "holds the keys" already.
+  const p = brokers.value.find(b => b.account_id === props.selectedAccount)
+  if (p) { form.destination_broker = p.profile; form.destination_account = p.account_id }
+}
+function reset() { Object.assign(form, blank()); editing.value = ''; prefillDestination() }
+watch(() => props.selectedAccount, () => { if (!editing.value && !form.destination_account) prefillDestination() }, { immediate: true })
 function edit(c) {
   Object.assign(form, { ...blank(), ...c, sizing_value: c.sizing_value ?? '', accepted_grades: [...(c.accepted_grades || [])] })
   editing.value = c.id

@@ -526,6 +526,15 @@ class Handler(BaseHTTPRequestHandler):
                     result = controller.delete_copy_config(payload)
                 except (ValueError, TypeError) as exc:
                     return self.reply(400, {'error': str(exc)})
+            elif self.path == '/api/account-view':
+                # Read the Selected account through its own held session (no re-login).
+                parts = payload.get('parts') or ('balance', 'orders', 'positions')
+                try:
+                    result = controller.account_view(payload.get('account_id'), tuple(parts))
+                except ValueError as exc:
+                    return self.reply(400, {'error': str(exc)})
+                except Exception:
+                    return self.reply(502, {'error': 'The selected account read failed; check the broker connection.'})
             elif self.path == '/api/signal-copying':
                 result = controller.set_signal_copying(payload.get('enabled'))
             elif self.path == "/api/token/refresh":

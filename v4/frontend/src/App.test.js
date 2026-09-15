@@ -142,7 +142,7 @@ test('Trading bridge hides login controls but keeps status grid, token panel, an
   // enabled but not live is not the "on" state; the pill shows off until both are set.
   expect(wrapper.find('[aria-label="TradingBox forwarding"]').text()).toContain('TradingBox off')
   expect(wrapper.find('[aria-label="Service status"]').exists()).toBe(true)
-  for (const label of ['BRIDGE', 'BROKER CONNECTION', 'ACCOUNT IN VIEW']) expect(wrapper.text()).toContain(label)
+  for (const label of ['BRIDGE', 'BROKER CONNECTION', 'SELECTED ACCOUNT']) expect(wrapper.text()).toContain(label)
   expect(wrapper.findAll('button').some(b => b.text() === 'Refresh token')).toBe(true)
   expect(request).not.toHaveBeenCalled()
   await wrapper.find('button.primary').trigger('click')

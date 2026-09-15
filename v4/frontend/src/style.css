@@ -20,6 +20,7 @@ main{margin-left:218px;max-width:1800px;width:calc(100% - 218px);padding:42px 38
 .copy-settings details { margin-top: 24px; line-height: 1.6; }
 @media (max-width: 800px) { .settings-grid, .mapping-row { grid-template-columns: 1fr; } .mapping-row .check { grid-column: auto; } }
 .mode-pill.copy-live{background:#9b2226;color:#fff;border-color:#9b2226;font-weight:700}
+.metric .account-select{margin-top:12px;max-width:100%;font-weight:600;font-size:15px}
 .mode-pills{display:flex;gap:10px;flex-wrap:wrap}
 button.mode-pill{min-height:auto;cursor:pointer;transition:background .15s,border-color .15s}
 button.mode-pill:hover:enabled{background:#dcebe3}

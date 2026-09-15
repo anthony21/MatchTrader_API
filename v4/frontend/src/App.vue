@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { request } from './api.js'
 import { followDashboard } from './stream.js'
 import AccountControls from './components/AccountControls.vue'
@@ -52,6 +52,15 @@ const destinations = computed(() => (brokerProfiles.value?.profiles || [])
 // the account connected for capture. The R01 lane is isolated and can target any connected account.
 const captureDestination = computed(() => (state.value.account_id && state.value.connection === 'connected')
   ? [{ id: state.value.account_id, profile: 'capture', broker: 'Capture account' }] : [])
+// The Selected account: whichever logged-in account is the current context. Its held session
+// serves reads and copies for that account with no re-login. Defaults to the capture account.
+const loggedInAccounts = computed(() => state.value.logged_in_accounts || [])
+const selectedAccount = ref('')
+watch(loggedInAccounts, list => {
+  if (!list.some(a => a.account_id === selectedAccount.value)) {
+    selectedAccount.value = (list.find(a => a.capture) || list[0])?.account_id || ''
+  }
+}, { immediate: true })
 // The two header pills toggle TradingBox forwarding and the copy mode. TradingBox "on"
 // means enabled and live together (the same definition the Forwarding switch uses); turning
 // it on needs a destination URL and a configured key. The copy pill flips paper/live and is
@@ -208,8 +217,12 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
           <p>{{ state.capture_message || 'Loading local service…' }}</p></article>
         <article class="card metric"><span class="metric-label">BROKER CONNECTION</span>
           <strong class="capitalize">{{ state.connection }}</strong><p>{{ state.connection_message }}</p></article>
-        <article class="card metric"><span class="metric-label">ACCOUNT IN VIEW</span>
-          <strong>{{ state.account_id || '—' }}</strong><p>Orders sent by this bridge: {{ state.broker_orders_sent ?? 0 }}</p></article>
+        <article class="card metric"><span class="metric-label">SELECTED ACCOUNT</span>
+          <select v-if="loggedInAccounts.length" v-model="selectedAccount" aria-label="Selected account" class="account-select">
+            <option v-for="a in loggedInAccounts" :key="a.account_id" :value="a.account_id">{{ a.broker }} · {{ a.account_id }}</option>
+          </select>
+          <strong v-else>{{ state.account_id || '—' }}</strong>
+          <p>Its held session serves reads and copies for this account, no re-login.</p></article>
       </section>
       <TokenSession v-if="OVERVIEW_PAGES.includes(page)" :state="state" :busy="busy" :refreshing="activeAction === 'token/refresh'"
         @refresh="action('token/refresh')" />
@@ -234,7 +247,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         </details>
       </template>
       <template v-else-if="page === 'settings'">
-        <CopyConfigs :configs="state.copy_configs || []" :profiles="brokerProfiles?.profiles || []" />
+        <CopyConfigs :configs="state.copy_configs || []" :profiles="brokerProfiles?.profiles || []" :selected-account="selectedAccount" />
         <details class="card" style="margin-top:20px;padding:20px"><summary>Legacy: native route and lanes (being retired)</summary>
           <CopySettings :state="state" />
           <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" :destinations="captureDestination" /></details>
