@@ -9,6 +9,7 @@ def test_each_source_gets_its_own_shape_on_the_shared_base():
     assert type(parse_signal(raw(source="P01_LOG", label="P01RR_1_1"))) is P01Signal
     assert type(parse_signal(raw(source="panel", label="P01RR_1_1"))) is P01Signal
     assert type(parse_signal(raw(source="R01", label="R01_BTCUSD_long_0_1_0_2"))) is R01Signal
+    assert type(parse_signal(raw(source="r01Auto", label="R01_BTCUSD_long_0_1_0_2"))) is R01Signal
     assert type(parse_signal(raw(source="somebody"))) is BaseSignal
     assert all(issubclass(shape, BaseSignal) for shape in (ChainSignal, P01Signal, R01Signal))
 

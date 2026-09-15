@@ -113,7 +113,8 @@ class R01Signal(BaseSignal):
         return self.copyOrderType or self.DETAIL_TYPES.get(self.detail, "")
 
 
-SOURCES = {"P01_LOG": P01Signal, "panel": P01Signal, "chain": ChainSignal, "R01": R01Signal, "r01": R01Signal}
+SOURCES = {"P01_LOG": P01Signal, "panel": P01Signal, "chain": ChainSignal,
+           "R01": R01Signal, "r01": R01Signal, "r01Auto": R01Signal}
 
 
 def parse_signal(raw) -> BaseSignal:
