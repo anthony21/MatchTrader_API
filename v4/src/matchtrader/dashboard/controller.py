@@ -30,6 +30,7 @@ from .broker_session import BrokerSession
 from .copy_settings import CopySettings, load_settings, save_settings
 from ..signals import SymbolMapStore
 from .p01_log import P01Log
+from .session_renewal import SessionRenewer
 from .signal_copy import SignalCopy
 
 DEFAULT_P01_LOG_PATH = 'C:/Quantower/Settings/Scripts/Indicators/_HCAMM_Shared/P01_RR.log'
@@ -125,13 +126,13 @@ class DashboardController:
         self.halt = Event()
         self.worker = None
         self._open_journal()
-        # Session tokens renew on their own timer, never by polling and never only on the next
-        # request: one quiet thread sleeps until the nearest session is two minutes from expiry,
-        # renews it, and sleeps again. It wakes early only when a connection actually changes.
+        # Session tokens renew on their own timer, never by polling. Each broker connection keeps
+        # its own renewer (started when it connects, cancelled when it drops) so connections are
+        # independent things: one renewer holds one connection's token open, two minutes before it
+        # would expire, without knowing or touching any other connection.
         self._closing = Event()
-        self._wake = Event()
-        self._keeper = Thread(target=self._keep_sessions_fresh, daemon=True, name="session-keeper")
-        self._keeper.start()
+        self._renewers = {}
+        self._renewers_lock = RLock()
 
     # ---- session renewal ----------------------------------------------------------------------
     def _connected_owners(self):
@@ -165,45 +166,45 @@ class DashboardController:
             self.native_store.notify_stream()
         return renewed, failed
 
-    def note_session_change(self):
-        """A connection was made or dropped: wake the keeper so it reschedules to the new nearest
-        expiry instead of sleeping on a stale deadline."""
-        self._wake.set()
+    def _renewal_result(self, name, renewed, ok, reason):
+        """One connection's renewer reports the outcome of a renewal it just ran."""
+        if not (renewed or not ok):
+            return  # a valid token that was not yet due: nothing to say
+        with self.lock:
+            stamp = datetime.now(UTC).strftime("%H:%M:%SZ")
+            if ok:
+                self.token_message = f"Token refreshed automatically at {stamp} for {name}."
+            else:
+                self.token_message = f"Automatic token refresh failed at {stamp} for {name} ({reason}); use Refresh token."
+        self.native_store.notify_stream()
 
-    def _next_renewal_delay(self, margin_seconds=120):
-        """Seconds until the soonest connected session needs renewing, or None when none are
-        connected (the keeper then sleeps until a connection wakes it). One owner that cannot
-        report a delay must not break the schedule for the others."""
-        delays = []
-        for _, api in self._connected_owners():
-            try:
-                d = api.connection.renewal_delay(margin_seconds)
-            except Exception:
-                d = 0.0   # cannot tell: check it soon rather than sleep on a stale deadline
-            if d is not None:
-                delays.append(d)
-        return min(delays) if delays else None
+    def start_renewal(self, name, api):
+        """A broker connection was established: give it its own renewer so its token is held open,
+        two minutes before expiry, independently of every other connection. Replaces any prior
+        renewer for the same connection (a reconnect or manual refresh)."""
+        if self._closing.is_set():
+            return
+        with self._renewers_lock:
+            existing = self._renewers.pop(name, None)
+            if existing is not None:
+                existing.cancel()
+            renewer = SessionRenewer(name, api, self._renewal_result)
+            self._renewers[name] = renewer
+        renewer.start()
 
-    def _keep_sessions_fresh(self):
-        # Timer-driven, not interval polling: wait exactly until the nearest token's two-minute mark
-        # (capped at an hour as a safety re-check, and woken early by note_session_change). Renew
-        # what is due, then reschedule. Back off after a failure so a rejected credential can't spin.
-        while not self._closing.is_set():
-            delay = self._next_renewal_delay()
-            wait = 3600.0 if delay is None else min(delay, 3600.0)
-            if wait > 0:
-                woken = self._wake.wait(timeout=wait)
-                self._wake.clear()
-                if self._closing.is_set():
-                    break
-                if woken:
-                    continue  # a connection changed while we waited: reschedule before renewing
-            try:
-                _, failed = self.refresh_sessions_once()
-            except Exception:
-                failed = True  # the keeper must outlive any single failure
-            if failed:
-                self._closing.wait(60)  # do not retry a session that will not renew in a tight loop
+    def stop_renewal(self, name):
+        """A broker connection was dropped: cancel only its renewer."""
+        with self._renewers_lock:
+            renewer = self._renewers.pop(name, None)
+        if renewer is not None:
+            renewer.cancel()
+
+    def _stop_all_renewals(self):
+        with self._renewers_lock:
+            renewers = list(self._renewers.values())
+            self._renewers.clear()
+        for renewer in renewers:
+            renewer.cancel()
 
     def _open_journal(self):
         if not self.selected:
@@ -218,6 +219,7 @@ class DashboardController:
             if self.running:
                 raise ValueError("Stop capture before changing accounts")
             if self.api:
+                self.stop_renewal("primary")   # this connection is going away
                 self.api.close()
                 self.api = None
             if self.bridge:
@@ -278,7 +280,10 @@ class DashboardController:
                     self.connection_message = (
                         "Connection failed. Check the local credentials and broker configuration."
                     )
-            self.note_session_change()   # reschedule the keeper to this session's expiry
+            if self.api is not None and self.connection == "connected":
+                self.start_renewal("primary", self.api)   # this connection keeps its own token alive
+            else:
+                self.stop_renewal("primary")
             return self.status()
 
     def refresh_positions(self):
@@ -532,7 +537,8 @@ class DashboardController:
                 self.token_message = "Token refreshed successfully."
             except Exception:
                 self.token_message = "Token refresh failed. Check credentials and try again."
-            self.note_session_change()   # token changed: reschedule the keeper
+            if self.api is not None and self.connection == "connected":
+                self.start_renewal("primary", self.api)   # token changed: re-arm this connection's renewer
             return self.status()
 
     def refresh_orders(self):
@@ -834,6 +840,7 @@ class DashboardController:
                 if self.worker.is_alive():
                     raise RuntimeError("Observer has not stopped yet")
                 self.worker = None
+            self.stop_renewal("primary")   # capture connection is closing; cancel its renewer
             with self.lock:
                 if self.api:
                     self.api.close()
@@ -846,7 +853,7 @@ class DashboardController:
 
     def close(self):
         self._closing.set()
-        self._wake.set()   # wake the keeper out of its sleep so it exits promptly
+        self._stop_all_renewals()   # cancel every connection's renewal timer
         if self.tradingbox_forwarder:
             self.tradingbox_forwarder.close()
         if self.broker_profiles:

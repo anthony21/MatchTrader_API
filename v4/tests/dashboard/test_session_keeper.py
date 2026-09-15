@@ -1,4 +1,4 @@
-"""Session tokens renew on their own timer through the controller's keeper, never by polling."""
+"""Each broker connection keeps its own renewal timer; tokens renew on that timer, never by polling."""
 from types import SimpleNamespace
 
 from matchtrader.dashboard.controller import DashboardController
@@ -11,7 +11,7 @@ class Owner:
                                           renew_if_due=self._renew,
                                           renewal_delay=lambda margin_seconds=120: delay)
 
-    def _renew(self, margin_seconds=90):
+    def _renew(self, margin_seconds=120):
         self.calls += 1
         if self.fail:
             raise TimeoutError('broker')
@@ -21,29 +21,21 @@ class Owner:
         pass
 
 
-def test_keeper_thread_starts_with_the_controller_and_stops_on_close(tmp_path, settings):
+def test_each_connection_gets_its_own_renewer_and_close_cancels_them_all(tmp_path, settings):
     controller = DashboardController(settings, tmp_path / 'data')
     try:
-        assert controller._keeper.is_alive() and controller._keeper.daemon
+        assert controller._renewers == {}                       # nothing connected: no timers
+        controller.start_renewal('primary', Owner(due=False))
+        controller.start_renewal('GTR', Owner(due=False))
+        assert set(controller._renewers) == {'primary', 'GTR'}  # one per connection, tracked separately
+        first = controller._renewers['primary']
+        controller.start_renewal('primary', Owner(due=False))   # a reconnect replaces its own renewer
+        assert controller._renewers['primary'] is not first
+        controller.stop_renewal('GTR')                          # dropping one cancels only its timer
+        assert set(controller._renewers) == {'primary'}
     finally:
         controller.close()
-    assert controller._closing.is_set()
-    controller._keeper.join(timeout=2)
-    assert not controller._keeper.is_alive()
-
-
-def test_keeper_sleeps_to_the_nearest_expiry_and_wakes_on_a_connection_change(tmp_path, settings):
-    controller = DashboardController(settings, tmp_path / 'data')
-    try:
-        assert controller._next_renewal_delay() is None                    # nothing connected: sleep idle
-        controller.api, controller.connection = Owner(due=False, delay=300.0), 'connected'
-        assert controller._next_renewal_delay() == 300.0                   # sleep exactly until the 2-min mark
-        controller._wake.clear()
-        controller.note_session_change()
-        assert controller._wake.is_set()                                   # a connection change wakes it early
-    finally:
-        controller.api = None
-        controller.close()
+    assert controller._closing.is_set() and controller._renewers == {}
 
 
 def test_one_pass_renews_only_owners_whose_timer_is_up_and_pushes_the_result(tmp_path, settings):

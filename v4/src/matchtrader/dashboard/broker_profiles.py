@@ -83,12 +83,18 @@ class BrokerProfiles:
             raise ValueError('Unknown broker profile')
         return self.entries[name]
 
-    def _note_session_change(self):
-        """Tell the controller's renewal keeper that a profile session was established or dropped,
-        so it reschedules to the new nearest token expiry instead of a stale one."""
-        note = getattr(self.primary, 'note_session_change', None)
-        if callable(note):
-            note()
+    def _start_renewal(self, name, api):
+        """A profile session was established: give it its own renewal timer on the controller, so it
+        keeps its token alive independently of every other connection."""
+        start = getattr(self.primary, 'start_renewal', None)
+        if callable(start):
+            start(name, api)
+
+    def _stop_renewal(self, name):
+        """A profile session was dropped: cancel only its renewal timer."""
+        stop = getattr(self.primary, 'stop_renewal', None)
+        if callable(stop):
+            stop(name)
 
     def snapshot(self):
         result = []
@@ -230,7 +236,7 @@ class BrokerProfiles:
                     elif entry['api']:
                         entry['api'].close()
                     entry.update(api=None, state='disconnected', data={}, error='', accounts=[], authentication=None)
-                    self._note_session_change()   # a session was dropped: reschedule token renewal
+                    self._stop_renewal(name)   # a session was dropped: cancel its renewal timer
                 else:
                     parts = PARTS[action]
                     if primary:
@@ -256,7 +262,7 @@ class BrokerProfiles:
                                 api.close()
                                 raise
                             entry['api'] = api
-                            self._note_session_change()   # a new session: reschedule token renewal
+                            self._start_renewal(name, api)   # a new session: start its own renewal timer
                         self._read(entry, entry['api'], settings.account_id, parts)
                     entry.update(state='connected', error='')
             except Exception:
