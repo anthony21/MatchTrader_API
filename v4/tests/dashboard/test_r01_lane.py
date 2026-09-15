@@ -113,9 +113,9 @@ def test_grades_gate_intents_and_a_downgrade_retracts_a_resting_copy(tmp_path, s
         controller.close()
 
 
-def test_the_capture_worker_path_observes_ledger_rows_but_no_longer_drives_copies(tmp_path, settings):
-    """The CSV ledger is no longer a copy driver: the worker records each row for observation and
-    history, but never places or decides a copy from it. Copying is wire-driven now."""
+def test_the_capture_worker_path_decides_every_ledger_row_with_an_account_selected(tmp_path, settings):
+    """The CSV tail is a real-time feed that drives copying: the worker hands each row to the lane,
+    which decides it, and the journal row carries the decision."""
     broker = PendingBroker()
     controller = r01_controller(tmp_path, settings, broker, 'paper')
     try:
@@ -127,14 +127,13 @@ def test_the_capture_worker_path_observes_ledger_rows_but_no_longer_drives_copie
                    'classification': 'ledger_observation_only', 'execution_status': 'not_submitted',
                    'reason': 'ledger_has_no_volume_or_verified_outbound_order_contract'}
         controller._observe_ledger_row('ledger.csv', 4321, payload)
-        assert observed and 'lane' not in observed[0]              # the ledger no longer decides a copy
-        assert controller.r01_copy.feed()['events'] == []          # nothing was copied from the CSV
+        assert observed and observed[0]['lane']['status'] == 'paper' and 'R01 lane: Paper' in observed[0]['reason']
+        assert controller.r01_copy.feed()['events'][0]['copy_request']['instrument'] == 'NAS100'
         assert broker.calls == []
-        # Without an account the observation still lands in the in-memory feed, as an observation only.
+        # Without an account the observation lands in the in-memory feed with the same decision.
         controller.bridge = None
         controller._observe_ledger_row('ledger.csv', 4322, {**payload, 'record': row('cancelled', 'R01_US 500_long_0_514_0_459')})
-        assert controller.source_signal_feed()[-1]['meaning']['source']['code'] == 'R01'
-        assert 'copy_result' not in controller.source_signal_feed()[-1]
+        assert controller.source_signal_feed()[-1]['copy_result']['kind'] == 'cancelled'
     finally:
         controller.api = None
         controller.close()
