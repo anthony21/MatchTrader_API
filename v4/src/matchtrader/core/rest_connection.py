@@ -243,6 +243,23 @@ class RestConnection(BaseConnection):
                 return remaining <= margin_seconds
             return time.monotonic() >= self._expires
 
+    def renewal_delay(self, margin_seconds=120):
+        """Seconds from now until renewal becomes due, so a scheduler can sleep exactly that long
+        instead of polling. 0 when already due, None when there is no session to keep alive. Cheap:
+        no network. The token's own expiry is the authority; the monotonic timer stands in only when
+        the token carries no readable expiry."""
+        with self._lock:
+            if self.closed or not self._session_token:
+                return None
+            expiry = self.session_expires_at
+            if expiry:
+                try:
+                    remaining = (datetime.fromisoformat(expiry) - datetime.now(UTC)).total_seconds()
+                except ValueError:
+                    return max(0.0, self._expires - time.monotonic())
+                return max(0.0, remaining - margin_seconds)
+            return max(0.0, self._expires - time.monotonic())
+
     def renew_if_due(self, margin_seconds=120):
         """Renew on the timer, not on the next request. Returns True when a renewal ran."""
         with self._lock:

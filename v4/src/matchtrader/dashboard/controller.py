@@ -126,8 +126,10 @@ class DashboardController:
         self.worker = None
         self._open_journal()
         # Session tokens renew on their own timer, never by polling and never only on the next
-        # request: one quiet thread asks each connected owner whether renewal is due.
+        # request: one quiet thread sleeps until the nearest session is two minutes from expiry,
+        # renews it, and sleeps again. It wakes early only when a connection actually changes.
         self._closing = Event()
+        self._wake = Event()
         self._keeper = Thread(target=self._keep_sessions_fresh, daemon=True, name="session-keeper")
         self._keeper.start()
 
@@ -163,12 +165,45 @@ class DashboardController:
             self.native_store.notify_stream()
         return renewed, failed
 
-    def _keep_sessions_fresh(self):
-        while not self._closing.wait(20):
+    def note_session_change(self):
+        """A connection was made or dropped: wake the keeper so it reschedules to the new nearest
+        expiry instead of sleeping on a stale deadline."""
+        self._wake.set()
+
+    def _next_renewal_delay(self, margin_seconds=120):
+        """Seconds until the soonest connected session needs renewing, or None when none are
+        connected (the keeper then sleeps until a connection wakes it). One owner that cannot
+        report a delay must not break the schedule for the others."""
+        delays = []
+        for _, api in self._connected_owners():
             try:
-                self.refresh_sessions_once()
+                d = api.connection.renewal_delay(margin_seconds)
             except Exception:
-                pass  # the keeper must outlive any single failure; the next pass reports it
+                d = 0.0   # cannot tell: check it soon rather than sleep on a stale deadline
+            if d is not None:
+                delays.append(d)
+        return min(delays) if delays else None
+
+    def _keep_sessions_fresh(self):
+        # Timer-driven, not interval polling: wait exactly until the nearest token's two-minute mark
+        # (capped at an hour as a safety re-check, and woken early by note_session_change). Renew
+        # what is due, then reschedule. Back off after a failure so a rejected credential can't spin.
+        while not self._closing.is_set():
+            delay = self._next_renewal_delay()
+            wait = 3600.0 if delay is None else min(delay, 3600.0)
+            if wait > 0:
+                woken = self._wake.wait(timeout=wait)
+                self._wake.clear()
+                if self._closing.is_set():
+                    break
+                if woken:
+                    continue  # a connection changed while we waited: reschedule before renewing
+            try:
+                _, failed = self.refresh_sessions_once()
+            except Exception:
+                failed = True  # the keeper must outlive any single failure
+            if failed:
+                self._closing.wait(60)  # do not retry a session that will not renew in a tight loop
 
     def _open_journal(self):
         if not self.selected:
@@ -243,6 +278,7 @@ class DashboardController:
                     self.connection_message = (
                         "Connection failed. Check the local credentials and broker configuration."
                     )
+            self.note_session_change()   # reschedule the keeper to this session's expiry
             return self.status()
 
     def refresh_positions(self):
@@ -496,6 +532,7 @@ class DashboardController:
                 self.token_message = "Token refreshed successfully."
             except Exception:
                 self.token_message = "Token refresh failed. Check credentials and try again."
+            self.note_session_change()   # token changed: reschedule the keeper
             return self.status()
 
     def refresh_orders(self):
@@ -809,6 +846,7 @@ class DashboardController:
 
     def close(self):
         self._closing.set()
+        self._wake.set()   # wake the keeper out of its sleep so it exits promptly
         if self.tradingbox_forwarder:
             self.tradingbox_forwarder.close()
         if self.broker_profiles:

@@ -5,9 +5,11 @@ from matchtrader.dashboard.controller import DashboardController
 
 
 class Owner:
-    def __init__(self, due, fail=False):
+    def __init__(self, due, fail=False, delay=1800.0):
         self.due, self.fail, self.calls = due, fail, 0
-        self.connection = SimpleNamespace(account_id='123', session_expires_at=None, renew_if_due=self._renew)
+        self.connection = SimpleNamespace(account_id='123', session_expires_at=None,
+                                          renew_if_due=self._renew,
+                                          renewal_delay=lambda margin_seconds=120: delay)
 
     def _renew(self, margin_seconds=90):
         self.calls += 1
@@ -28,6 +30,20 @@ def test_keeper_thread_starts_with_the_controller_and_stops_on_close(tmp_path, s
     assert controller._closing.is_set()
     controller._keeper.join(timeout=2)
     assert not controller._keeper.is_alive()
+
+
+def test_keeper_sleeps_to_the_nearest_expiry_and_wakes_on_a_connection_change(tmp_path, settings):
+    controller = DashboardController(settings, tmp_path / 'data')
+    try:
+        assert controller._next_renewal_delay() is None                    # nothing connected: sleep idle
+        controller.api, controller.connection = Owner(due=False, delay=300.0), 'connected'
+        assert controller._next_renewal_delay() == 300.0                   # sleep exactly until the 2-min mark
+        controller._wake.clear()
+        controller.note_session_change()
+        assert controller._wake.is_set()                                   # a connection change wakes it early
+    finally:
+        controller.api = None
+        controller.close()
 
 
 def test_one_pass_renews_only_owners_whose_timer_is_up_and_pushes_the_result(tmp_path, settings):

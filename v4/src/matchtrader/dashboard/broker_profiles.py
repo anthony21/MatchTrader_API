@@ -83,6 +83,13 @@ class BrokerProfiles:
             raise ValueError('Unknown broker profile')
         return self.entries[name]
 
+    def _note_session_change(self):
+        """Tell the controller's renewal keeper that a profile session was established or dropped,
+        so it reschedules to the new nearest token expiry instead of a stale one."""
+        note = getattr(self.primary, 'note_session_change', None)
+        if callable(note):
+            note()
+
     def snapshot(self):
         result = []
         for name, entry in self.entries.items():
@@ -223,6 +230,7 @@ class BrokerProfiles:
                     elif entry['api']:
                         entry['api'].close()
                     entry.update(api=None, state='disconnected', data={}, error='', accounts=[], authentication=None)
+                    self._note_session_change()   # a session was dropped: reschedule token renewal
                 else:
                     parts = PARTS[action]
                     if primary:
@@ -248,6 +256,7 @@ class BrokerProfiles:
                                 api.close()
                                 raise
                             entry['api'] = api
+                            self._note_session_change()   # a new session: reschedule token renewal
                         self._read(entry, entry['api'], settings.account_id, parts)
                     entry.update(state='connected', error='')
             except Exception:
