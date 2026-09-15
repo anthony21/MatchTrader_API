@@ -722,14 +722,12 @@ class DashboardController:
                 tail.close()
 
     def _observe_ledger_row(self, path, offset, payload):
-        """One fresh R01 ledger row: the R01 lane decides on it first, whatever journal then
-        records the observation. With an account selected the observation goes to the shadow
-        journal (the bridge page's LEDGER rows); without one it goes to the in-memory feed."""
+        """One fresh R01 ledger row, recorded for observation and history only. The CSV ledger no
+        longer drives copying: copying is wire-driven through the copy configurations. With an
+        account selected the observation goes to the shadow journal (the bridge page's LEDGER rows);
+        without one it goes to the in-memory feed."""
         row = payload['record']
-        decision = self._copy_r01_row(row, payload.get('extra_fields') or [])
-        if decision:
-            payload = {**payload, 'lane': decision,
-                       'reason': f"{payload.get('reason', '')} | R01 lane: {str(decision.get('reason', ''))[:160]}"}
+        decision = None
         if self.bridge:
             self.bridge.journal.observe(datetime.now(UTC).isoformat(), path, offset, payload)
         else:
