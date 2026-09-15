@@ -41,11 +41,14 @@ def test_engine_refuses_with_the_reason_that_names_the_failed_check(changes, ctx
 
 
 def test_min_box_refuses_a_tight_box_and_admits_one_at_or_above_the_minimum():
-    # raw() has entry 100, sl 105, tp 95, so the box (|tp - sl|) is 10.
-    with pytest.raises(Refusal, match="below the 20 minimum"):
-        SignalEngine(lane(), symbols(min_box="20")).decide(parse_signal(raw()), context())
-    plan = SignalEngine(lane(), symbols(min_box="10")).decide(parse_signal(raw()), context())
+    # raw() has entry 100, sl 105, tp 95, so the box (|tp - sl|) is 10. The minimum box and its
+    # switch live on the lane (the copy configuration), not the symbol map.
+    with pytest.raises(Refusal, match="below the 20 minimum box"):
+        SignalEngine(lane(min_box=Decimal("20"), min_box_enabled=True), symbols()).decide(parse_signal(raw()), context())
+    plan = SignalEngine(lane(min_box=Decimal("10"), min_box_enabled=True), symbols()).decide(parse_signal(raw()), context())
     assert plan.volume == Decimal("0.2")   # box exactly at the minimum is allowed
+    # The switch off ignores the value entirely, even a value above the box.
+    assert SignalEngine(lane(min_box=Decimal("20"), min_box_enabled=False), symbols()).decide(parse_signal(raw()), context()).volume == Decimal("0.2")
 
 
 def test_sizing_modes_fixed_lots_fixed_dollar_and_percent_of_equity():

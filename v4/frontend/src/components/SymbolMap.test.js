@@ -35,21 +35,11 @@ test('saving posts the whole table as a replacement and never touches the lane s
   await added.find('select').setValue('LIMIT')
   await wrapper.find('form').trigger('submit'); await flushPromises()
   expect(request).toHaveBeenLastCalledWith('symbol-map', {
-    'US 500': { destination: 'SPX500', lots: '0.01', order_type: 'SOURCE', min_box: '0' },
-    BTCUSD: { destination: 'BTCUSD', lots: '1', order_type: 'SOURCE', min_box: '0' },
-    'US TECH 100': { destination: 'NAS100', lots: '0.02', order_type: 'LIMIT', min_box: '0' } })
+    'US 500': { destination: 'SPX500', lots: '0.01', order_type: 'SOURCE' },
+    BTCUSD: { destination: 'BTCUSD', lots: '1', order_type: 'SOURCE' },
+    'US TECH 100': { destination: 'NAS100', lots: '0.02', order_type: 'LIMIT' } })
   expect(request).not.toHaveBeenCalledWith('signal-copy-settings', expect.anything())
   expect(wrapper.find('[role=status]').text()).toContain('3 symbols')
-  wrapper.unmount()
-})
-
-test('a minimum box entered on a row is posted for that symbol', async () => {
-  request.mockImplementation(async (path, body) => body ?? saved)
-  const wrapper = mount(SymbolMap, { props: { state: {} } })
-  await flushPromises()
-  await wrapper.findAll('tbody tr')[0].find('input[aria-label="Min box"]').setValue('6')
-  await wrapper.find('form').trigger('submit'); await flushPromises()
-  expect(request.mock.calls.at(-1)[1]['US 500'].min_box).toBe('6')
   wrapper.unmount()
 })
 

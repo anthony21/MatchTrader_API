@@ -13,7 +13,8 @@ const SIZING = [['lots', 'Fixed lots (Symbol map)'], ['dollar', 'Fixed dollar ri
 const busy = ref(''), error = ref(''), message = ref('')
 const editing = ref('')
 const blank = () => ({ id: '', name: '', machine_id: '', source: 'r01Auto', connection_name: '',
-  destination_broker: '', destination_account: '', sizing: 'lots', sizing_value: '', accepted_grades: [] })
+  destination_broker: '', destination_account: '', sizing: 'lots', sizing_value: '',
+  min_box: '', min_box_enabled: false, accepted_grades: [] })
 const form = reactive(blank())
 // Connected brokers (distinct), and the accounts available under the chosen one, from the
 // logged-in accounts list. The machine picker offers the identities seen on the wire.
@@ -40,7 +41,8 @@ function prefillDestination() {
 function reset() { Object.assign(form, blank()); editing.value = ''; machinePick.value = ''; prefillDestination() }
 watch(() => props.selectedAccount, () => { if (!editing.value && !form.destination_account) prefillDestination() }, { immediate: true })
 function edit(c) {
-  Object.assign(form, { ...blank(), ...c, sizing_value: c.sizing_value ?? '', accepted_grades: [...(c.accepted_grades || [])] })
+  Object.assign(form, { ...blank(), ...c, sizing_value: c.sizing_value ?? '',
+    min_box: c.min_box ?? '', min_box_enabled: !!c.min_box_enabled, accepted_grades: [...(c.accepted_grades || [])] })
   machinePick.value = props.machines.some(m => m.machine_id === c.machine_id && m.source === c.source) ? `${c.machine_id}|${c.source}` : ''
   editing.value = c.id
 }
@@ -57,6 +59,7 @@ async function save() {
   busy.value = 'save'
   const body = { ...form, id: form.id || `cfg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
     name: form.name.trim(), machine_id: form.machine_id.trim(), connection_name: form.connection_name.trim(),
+    min_box_enabled: !!form.min_box_enabled, min_box: form.min_box_enabled ? String(form.min_box || 0).trim() : '0',
     ...(form.sizing === 'lots' ? { sizing_value: null } : { sizing_value: String(form.sizing_value).trim() }) }
   try { await request('copy-configs', body); message.value = `Saved "${body.name}".`; reset() }
   catch (e) { error.value = e.message }
@@ -76,13 +79,14 @@ const brokerLabel = p => (brokers.value.find(b => b.profile === p)?.broker) || p
   <section class="card copy-configs" aria-label="Copy configurations">
     <h2>Copy configurations</h2>
     <p>Each configuration copies one strategy's live signals, matched by the machine ID it sends on the wire, to one broker account.
-      Lots, order handling and the minimum box come from the Symbol map. Each config has its own Paper/Live and On/Off; there is no global switch.</p>
+      Lots and order handling come from the Symbol map. The minimum box is set here per config with its own switch. Each config has its own Paper/Live and On/Off; there is no global switch.</p>
 
     <div v-if="!configs.length" class="empty-note">No configurations yet. Define one below and save it.</div>
     <article v-for="c in configs" :key="c.id" class="config-row" :class="{ live: c.mode === 'live' && c.enabled }">
       <div class="config-head">
         <strong>{{ c.name }}</strong>
         <span class="tag">{{ c.machine_id }} · {{ c.source }} → {{ brokerLabel(c.destination_broker) }} · {{ c.destination_account }}</span>
+        <span v-if="c.min_box_enabled" class="tag">Min box {{ c.min_box }}</span>
       </div>
       <div class="config-switches">
         <button type="button" class="pill" :class="{ 'pill-live': c.mode === 'live' }" :disabled="busy === `mode:${c.id}`" @click="setMode(c)">{{ c.mode === 'live' ? 'Live' : 'Paper' }}</button>
@@ -109,6 +113,8 @@ const brokerLabel = p => (brokers.value.find(b => b.profile === p)?.broker) || p
           <option v-for="a in brokerAccounts" :key="a.account_id" :value="a.account_id">{{ a.account_id }}</option></select></label>
         <label>Sizing<select v-model="form.sizing"><option v-for="[v, l] in SIZING" :key="v" :value="v">{{ l }}</option></select></label>
         <label v-if="form.sizing !== 'lots'">{{ form.sizing === 'percent' ? 'Percent of equity' : 'Dollar risk' }}<input v-model="form.sizing_value" type="number" min="0.00000001" step="any" required /></label>
+        <label class="check-inline"><input type="checkbox" v-model="form.min_box_enabled" />Filter by minimum box (TP→SL)</label>
+        <label v-if="form.min_box_enabled">Minimum box<input v-model="form.min_box" type="number" min="0" step="any" placeholder="e.g. 75" /></label>
       </div>
       <div class="grades"><span>Accepted grades (none = all):</span>
         <label v-for="g in GRADES" :key="g" class="check"><input type="checkbox" :checked="form.accepted_grades.includes(g)" @change="toggleGrade(g, $event.target.checked)" />{{ g }}</label>
@@ -136,6 +142,7 @@ const brokerLabel = p => (brokers.value.find(b => b.profile === p)?.broker) || p
 .config-form{border-top:1px solid #e6ebf2;margin-top:20px;padding-top:16px}.config-form h3{margin:0 0 12px;font-size:15px}
 .copy-configs .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.copy-configs label{display:flex;flex-direction:column;gap:6px;font-size:13px}
 .copy-configs input,.copy-configs select{padding:10px;border:1px solid #ced8e4;border-radius:7px;min-width:0}
+.copy-configs .check-inline{flex-direction:row;align-items:center;gap:8px;align-self:end}.copy-configs .check-inline input{width:auto;padding:0}
 .grades{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:16px 0;font-size:13px}.grades .check{flex-direction:row;gap:6px}.grades .check input{width:auto}
 .copy-configs .actions{display:flex;gap:12px;margin-top:8px}.copy-configs .actions button{padding:10px 16px;border-radius:7px;cursor:pointer;border:1px solid #ced8e4}
 .copy-configs .primary{background:#146e5b;border-color:#146e5b;color:#fff}

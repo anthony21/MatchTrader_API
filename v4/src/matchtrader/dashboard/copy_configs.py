@@ -37,6 +37,12 @@ class CopyConfig(BaseModel):
     retract_on_downgrade: bool = True
     sizing: Literal["lots", "dollar", "percent"] = "lots"
     sizing_value: Decimal | None = Field(default=None, gt=0)
+    # The minimum box (take-profit to stop-loss distance) this config will copy, with its own
+    # switch. It lives here on the copy configuration, not on the symbol map, so one setting with
+    # one switch governs every instrument. Tight boxes stop out on entry noise; 0 or the switch off
+    # disables the filter.
+    min_box: Decimal = Field(default=Decimal(0), ge=0)
+    min_box_enabled: bool = False
     mode: Literal["paper", "live"] = "paper"
     enabled: bool = False
 

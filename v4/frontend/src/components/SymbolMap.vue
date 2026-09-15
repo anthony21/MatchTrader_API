@@ -8,7 +8,7 @@ const ORDER_TYPES = [
 const rows = ref([])
 const busy = ref(false), error = ref(''), message = ref('')
 const live = computed(() => !!props.state?.signal_copying)
-function blank() { return { source: '', destination: '', lots: '', order_type: 'SOURCE', min_box: '' } }
+function blank() { return { source: '', destination: '', lots: '', order_type: 'SOURCE' } }
 async function load() {
   error.value = ''
   try {
@@ -24,9 +24,8 @@ async function save() {
     const sources = rows.value.map(row => row.source.trim())
     if (sources.some(s => !s)) throw Error('Every row needs a Quantower symbol.')
     if (new Set(sources).size !== sources.length) throw Error('Quantower symbols must be unique.')
-    const map = Object.fromEntries(rows.value.map(({ source, destination, lots, order_type, min_box }) =>
-      [source.trim(), { destination: destination.trim(), lots: String(lots).trim(), order_type,
-        min_box: String(min_box ?? '').trim() || '0' }]))
+    const map = Object.fromEntries(rows.value.map(({ source, destination, lots, order_type }) =>
+      [source.trim(), { destination: destination.trim(), lots: String(lots).trim(), order_type }]))
     const saved = await request('symbol-map', map)
     rows.value = Object.entries(saved).map(([source, value]) => ({ source, ...value }))
     message.value = `Symbol map saved: ${rows.value.length} symbol${rows.value.length === 1 ? '' : 's'}.`
@@ -41,11 +40,11 @@ async function save() {
     <p>One row per Quantower symbol: the AquaFunded instrument it becomes, the lot size sent, and how the order type is chosen.
       The signal engine looks this table up for every intent; it is not part of the lane settings and is saved on its own.
       Use the destination name exactly as AquaFunded lists it (for example SPX500, NAS100, XAUUSD).
-      Min box is the smallest take-profit to stop-loss distance (in that instrument's price) an intent may have; tighter setups are skipped because they stop out on entry noise. Leave 0 to accept any size.</p>
+      The minimum box (take-profit to stop-loss distance) is set per copy configuration, with its own switch, not here.</p>
     <form @submit.prevent="save">
       <fieldset :disabled="busy || live">
         <table>
-          <thead><tr><th>Quantower symbol</th><th>AquaFunded instrument</th><th>Lots</th><th>Order handling</th><th>Min box (TP→SL)</th><th></th></tr></thead>
+          <thead><tr><th>Quantower symbol</th><th>AquaFunded instrument</th><th>Lots</th><th>Order handling</th><th></th></tr></thead>
           <tbody>
             <tr v-for="(row, index) in rows" :key="index" class="mapping-row">
               <td><input v-model="row.source" aria-label="Quantower symbol" required placeholder="US 500" /></td>
@@ -53,7 +52,6 @@ async function save() {
               <td><input v-model="row.lots" aria-label="Lots" type="number" min="0.00000001" step="any" required /></td>
               <td><select v-model="row.order_type" aria-label="Order handling" required>
                 <option v-for="[value, label] in ORDER_TYPES" :key="value" :value="value">{{ label }}</option></select></td>
-              <td><input v-model="row.min_box" aria-label="Min box" type="number" min="0" step="any" placeholder="0 = off" /></td>
               <td><button type="button" :disabled="rows.length === 1" @click="rows.splice(index, 1)">Remove</button></td>
             </tr>
           </tbody>

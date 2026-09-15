@@ -11,7 +11,8 @@ const GRADES = ['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']
 // The lane: which machine and source, to which account, and how attribution is proven.
 // Symbols are not here; the Symbol map page owns them and the engine looks them up.
 const config = ref({ machine_id: '', source: props.r01 ? 'R01' : 'chain', connection_name: '', destination_account: '',
-  exclusive_destination: true, accepted_grades: [], retract_on_downgrade: true, risk_usd: '' })
+  exclusive_destination: true, accepted_grades: [], retract_on_downgrade: true, risk_usd: '',
+  min_box: '', min_box_enabled: false })
 const live = computed(() => !!props.state?.signal_copying)
 function selectP01() {
   if (config.value.p01_log_enabled) {
@@ -39,7 +40,8 @@ onMounted(async () => {
     const saved = await request(props.endpoint)
     if (saved.config) {
       const { symbols, ...lane } = saved.config
-      config.value = { accepted_grades: [], retract_on_downgrade: true, risk_usd: '', ...lane, risk_usd: lane.risk_usd ?? '' }
+      config.value = { accepted_grades: [], retract_on_downgrade: true, risk_usd: '', min_box: '', min_box_enabled: false,
+        ...lane, risk_usd: lane.risk_usd ?? '', min_box: lane.min_box ?? '', min_box_enabled: !!lane.min_box_enabled }
     } else {
       config.value.destination_account = props.state?.account_id || ''
       if (props.r01) config.value.machine_id = props.state?.p01_log?.machine || ''
@@ -51,7 +53,9 @@ async function save() {
   try {
     const { risk_usd, ...lane } = config.value
     const body = { ...lane, exclusive_destination: true, machine_id: config.value.machine_id.trim(),
-      source: props.r01 ? 'R01' : config.value.source.trim(), connection_name: (config.value.connection_name || '').trim() }
+      source: props.r01 ? 'R01' : config.value.source.trim(), connection_name: (config.value.connection_name || '').trim(),
+      min_box_enabled: !!config.value.min_box_enabled,
+      min_box: config.value.min_box_enabled ? String(config.value.min_box || 0).trim() : '0' }
     if (String(risk_usd ?? '').trim() !== '') body.risk_usd = String(risk_usd).trim()
     await request(props.endpoint, body)
     message.value = 'Lane saved.'
@@ -96,6 +100,12 @@ async function save() {
             <label>Risk per trade (USD, optional)<input v-model="config.risk_usd" type="number" min="0" step="any" placeholder="Leave blank to use the map's lots" /></label>
           </div>
         </template>
+        <legend>Minimum box</legend>
+        <label class="check"><input v-model="config.min_box_enabled" type="checkbox" />Skip intents whose box (take-profit to stop-loss distance) is below a minimum</label>
+        <div v-if="config.min_box_enabled" class="settings-grid">
+          <label>Minimum box (TP→SL)<input v-model="config.min_box" type="number" min="0" step="any" placeholder="e.g. 75" /></label>
+        </div>
+        <p class="hint">One minimum for every instrument this lane copies. Tight boxes stop out on entry noise. Off accepts any size.</p>
         <button type="submit" class="primary">Save lane</button>
       </fieldset>
     </form>

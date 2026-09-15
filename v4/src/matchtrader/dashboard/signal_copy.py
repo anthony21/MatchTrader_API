@@ -61,6 +61,12 @@ class SignalSettings(BaseModel):
     # is the dollars or the percent. None falls back to the legacy risk_usd (dollar) if it is set.
     sizing: Literal['lots', 'dollar', 'percent'] | None = None
     sizing_value: Decimal | None = Field(default=None, gt=0)
+    # The minimum box (take-profit to stop-loss distance) this lane will copy, with its own switch.
+    # It lives on the lane, not the symbol map, so one setting governs every instrument this lane
+    # handles. Tight boxes sit inside spread and noise and stop out on entry; 0 or the switch off
+    # disables the filter.
+    min_box: Decimal = Field(default=Decimal(0), ge=0)
+    min_box_enabled: bool = False
 
     @model_validator(mode='before')
     @classmethod

@@ -18,9 +18,9 @@ def lane(**changes):
     return SimpleNamespace(**{**fields, **changes})
 
 
-def symbols(order_type="LIMIT", lots="0.2", min_box="0"):
+def symbols(order_type="LIMIT", lots="0.2"):
     return SymbolMap({"US TECH 100": SymbolMapping(destination="NAS100", lots=Decimal(lots),
-                                                   order_type=order_type, min_box=Decimal(min_box))})
+                                                   order_type=order_type)})
 
 
 class Broker:

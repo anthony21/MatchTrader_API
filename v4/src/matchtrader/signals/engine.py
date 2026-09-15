@@ -107,8 +107,9 @@ class SignalEngine:
             raise Refusal("Intent needs a side and positive entry, stop and target")
         self._check_brackets(side, signal.entry, signal.stopLoss, signal.takeProfit)
         box = abs(signal.takeProfit - signal.stopLoss)
-        if mapping.min_box and box < mapping.min_box:
-            raise Refusal(f"Box {box} is below the {mapping.min_box} minimum for {mapping.destination}; "
+        floor = self._min_box(lane)
+        if floor and box < floor:
+            raise Refusal(f"Box {box} is below the {floor} minimum box set on this copy; "
                           "tight boxes stop out on entry noise")
         order_type = self._order_type(signal, mapping, side, ctx)
         lots = mapping.lots
@@ -167,6 +168,17 @@ class SignalEngine:
         if len(found) != 1:
             raise Refusal("Destination instrument is not uniquely available")
         return found[0].model_dump()
+
+    @staticmethod
+    def _min_box(lane):
+        """The minimum box (take-profit to stop-loss distance) this copy will accept, applied only
+        when the lane's own switch is on. The box filter lives on the copy configuration, not on the
+        symbol map, so one setting with one switch governs every instrument this copy handles. 0 or
+        the switch off disables it."""
+        if not getattr(lane, "min_box_enabled", False):
+            return Decimal(0)
+        value = getattr(lane, "min_box", None)
+        return Decimal(str(value)) if value else Decimal(0)
 
     @staticmethod
     def _sizing(lane):
