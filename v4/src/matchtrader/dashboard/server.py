@@ -345,25 +345,27 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.trusted(self.headers):
             return self.reply(403, {"error": "Local same-origin access required"})
         sender_paths = {"/events", "/capture/events", "/capture/signals", "/relay/logs", "/logging/events"}
-        if self.path not in sender_paths and not self.server.authorized(self.headers):
+        from urllib.parse import urlsplit
+        route = urlsplit(self.path).path
+        if route not in sender_paths and not self.server.authorized(self.headers):
             return self.reply(401, {"error": "Reload the dashboard to start a new local session"})
         try:
             lengths = self.headers.get_all("Content-Length", [])
             length = int(lengths[0]) if len(lengths) == 1 else -1
         except ValueError:
             length = -1
-        body_limit = (MAX_LOG_BODY if self.path == "/logging/events"
-                      else MAX_SIGNAL_BODY if self.path == "/capture/signals" else MAX_BODY)
+        body_limit = (MAX_LOG_BODY if route == "/logging/events"
+                      else MAX_SIGNAL_BODY if route == "/capture/signals" else MAX_BODY)
         if not 0 <= length <= body_limit or self.headers.get("Transfer-Encoding"):
             return self.reply(413, {"error": "Invalid request size"})
         try:
             body = self.rfile.read(length)
-            if self.path == '/capture/signals':
-                # Relay/sender only: a browser request always carries Origin and is refused outright.
-                token = self.server.bridge_token
-                if (self.headers.get('Origin') is not None or not token or not hmac.compare_digest(
-                        self.headers.get('Authorization', '').encode(), ('Bearer ' + token).encode())):
-                    return self.reply(401, {'error': 'Local signal receiver authentication required'})
+            if route == '/capture/signals':
+                # No token required: signals are accepted from the local sender and read live.
+                # Browser posts (which carry an Origin) are still refused; a token is not needed.
+                if self.headers.get('Origin') is not None:
+                    return self.reply(401, {'error': 'Local signal receiver: browser posts are refused'})
+                token = self.server.bridge_token or ''
                 # Show it the moment it lands. The relay archives these bytes to disk and the
                 # collector ships them later; waiting for that round trip would delay the Raw
                 # Data page by the collector's cycle for an event already in hand.

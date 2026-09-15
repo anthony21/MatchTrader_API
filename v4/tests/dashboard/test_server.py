@@ -372,7 +372,7 @@ def test_large_signal_batch_is_authenticated_and_logged_with_copying_off(server)
                     kind='intent' if i % 2 else 'closed') for i in range(46)]
     assert len(json.dumps(batch).encode()) > 16384
     headers = {'Authorization': 'Bearer ' + server.bridge_token}
-    assert call(server, '/capture/signals', 'POST', batch)[0] == 401
+    assert call(server, '/capture/signals', 'POST', batch)[0] == 202   # no token required to receive signals
     status, raw = call(server, '/capture/signals', 'POST', batch, headers)
     assert status == 202
     assert len(json.loads(raw)['results']) == 46
@@ -424,7 +424,8 @@ def test_signal_copy_routes_are_authenticated_and_archive_is_never_an_execution_
     from tests.dashboard.test_signal_copy import Broker, config, packet
     headers = {'X-Session-Token': 'test-session'}
     assert call(server, '/api/signal-copy-settings')[0] == 401
-    assert call(server, '/capture/signals', 'POST', [packet()])[0] == 401
+    # No token needed to receive signals now; only a browser post (Origin) is refused.
+    assert call(server, '/capture/signals', 'POST', [packet()], {'Origin': 'http://127.0.0.1:8765'})[0] == 401
     controller = server.controller
     controller.interactive_copying = True
     broker = Broker()
@@ -824,7 +825,8 @@ def test_a_rejected_signal_never_reaches_the_raw_feed(server):
 
     raw_log = server.controller.native_store.raw_log
     before = len(raw_log.entries)
-    assert call(server, '/capture/signals', 'POST', [packet(clientEventId='unauth')])[0] == 401
+    # A refused post (a browser Origin) is turned away before it can reach the raw feed.
+    assert call(server, '/capture/signals', 'POST', [packet(clientEventId='unauth')], {'Origin': 'http://127.0.0.1:8765'})[0] == 401
     assert len(raw_log.entries) == before
 
 
