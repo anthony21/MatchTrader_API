@@ -24,9 +24,13 @@ def symbols(order_type="LIMIT", lots="0.2", min_box="0"):
 
 
 class Broker:
-    def __init__(self, bid="99", ask="101"):
+    def __init__(self, bid="99", ask="101", equity="1000"):
         self.calls, self.bid, self.ask = [], Decimal(bid), Decimal(ask)
+        self.equity = Decimal(equity)
         self.quote_time = int(datetime.now(UTC).timestamp() * 1000)
+
+    def balance(self):
+        return SimpleNamespace(equity=self.equity, currency="USD")
 
     def instruments(self):
         return [SimpleNamespace(symbol="NAS100",

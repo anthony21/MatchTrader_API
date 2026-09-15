@@ -48,6 +48,22 @@ def test_min_box_refuses_a_tight_box_and_admits_one_at_or_above_the_minimum():
     assert plan.volume == Decimal("0.2")   # box exactly at the minimum is allowed
 
 
+def test_sizing_modes_fixed_lots_fixed_dollar_and_percent_of_equity():
+    # raw(): SELL, entry 100, sl 105 -> stop distance 5; helper instrument contractSize defaults to 1.
+    fixed = SignalEngine(lane(), symbols(lots="0.2")).decide(parse_signal(raw()), context())
+    assert fixed.volume == Decimal("0.2")                                 # fixed lots from the map
+    dollar = SignalEngine(lane(sizing="dollar", sizing_value=Decimal("10")), symbols()).decide(
+        parse_signal(raw()), context())
+    assert dollar.volume == Decimal("2.0")                                # $10 / (5 * 1)
+    percent = SignalEngine(lane(sizing="percent", sizing_value=Decimal("2")), symbols()).decide(
+        parse_signal(raw()), context(api=Broker(equity="1000")))
+    assert percent.volume == Decimal("4.0")                               # 2% of 1000 = $20; /5 = 4 lots
+    # Paper needs no broker, so sizing that needs equity is not consulted; the map's lots stand.
+    paper = SignalEngine(lane(sizing="percent", sizing_value=Decimal("2")), symbols()).decide(
+        parse_signal(raw()), context(mode="paper", api=None, verified=False))
+    assert paper.volume == Decimal("0.2")
+
+
 def test_no_lane_means_copying_is_off():
     with pytest.raises(Refusal, match="copying is off"):
         SignalEngine(None, symbols()).decide(parse_signal(raw()), context())

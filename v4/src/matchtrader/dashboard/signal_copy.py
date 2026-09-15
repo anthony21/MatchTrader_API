@@ -56,6 +56,11 @@ class SignalSettings(BaseModel):
     accepted_grades: list[Literal['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']] = Field(default_factory=list)
     retract_on_downgrade: bool = True
     risk_usd: Decimal | None = Field(default=None, gt=0)
+    # How lots are sized: 'lots' uses the Symbol map's fixed lots; 'dollar' risks a fixed dollar
+    # amount per trade; 'percent' risks that percent of the destination account's equity. The value
+    # is the dollars or the percent. None falls back to the legacy risk_usd (dollar) if it is set.
+    sizing: Literal['lots', 'dollar', 'percent'] | None = None
+    sizing_value: Decimal | None = Field(default=None, gt=0)
 
     @model_validator(mode='before')
     @classmethod

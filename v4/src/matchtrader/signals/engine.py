@@ -114,7 +114,8 @@ class SignalEngine:
         lots = mapping.lots
         if not ctx.paper:
             info = self._instrument(ctx.api, mapping.destination)
-            lots = self._lots(lane, mapping, signal, info)
+            equity = self._equity(ctx.api) if self._sizing(lane) == "percent" else None
+            lots = self._lots(lane, mapping, signal, info, equity)
             self._check_limits(info, lots, side)
             if order_type != "MARKET":
                 self._check_not_through_market(ctx, mapping.destination, side, order_type, signal.entry)
@@ -168,11 +169,41 @@ class SignalEngine:
         return found[0].model_dump()
 
     @staticmethod
-    def _lots(lane, mapping, signal, info):
-        """The map's fixed lots, or the lane's dollar risk divided by the stop distance in contract units."""
-        risk = getattr(lane, "risk_usd", None)
-        if not risk:
+    def _sizing(lane):
+        """How this config sizes: 'lots' (the map's fixed lots), 'dollar' (a fixed dollar risk), or
+        'percent' (a percent of account equity as the risk). Falls back to the old risk_usd field."""
+        mode = getattr(lane, "sizing", None)
+        if mode in {"lots", "dollar", "percent"}:
+            return mode
+        return "dollar" if getattr(lane, "risk_usd", None) else "lots"
+
+    @staticmethod
+    def _equity(api):
+        """The destination account's equity, read from the broker, for percent-of-account sizing."""
+        try:
+            equity = Decimal(str(api.balance().equity))
+        except Exception:
+            raise Refusal("Percent sizing needs the account equity; the balance read failed") from None
+        if not equity.is_finite() or equity <= 0:
+            raise Refusal("Percent sizing needs a positive account equity")
+        return equity
+
+    @classmethod
+    def _lots(cls, lane, mapping, signal, info, equity=None):
+        """The map's fixed lots, or a risk (fixed dollars, or a percent of equity) divided by the
+        stop distance in contract units."""
+        mode = cls._sizing(lane)
+        if mode == "lots":
             return mapping.lots
+        value = getattr(lane, "sizing_value", None)
+        if value is None:
+            value = getattr(lane, "risk_usd", None)
+        if not value or Decimal(str(value)) <= 0:
+            raise Refusal("This config's sizing needs a positive dollar amount or percent")
+        if mode == "percent":
+            risk = equity * Decimal(str(value)) / Decimal(100)
+        else:
+            risk = Decimal(str(value))
         try:
             contract = Decimal(str(info.get("contractSize") or 1))
             step, minimum = (Decimal(str(info[k])) for k in ("volumeStep", "volumeMin"))
@@ -181,7 +212,7 @@ class SignalEngine:
         distance = abs(signal.entry - signal.stopLoss)
         if distance <= 0 or contract <= 0:
             raise Refusal("Risk sizing needs a positive stop distance")
-        lots = (Decimal(risk) / (distance * contract)).quantize(step, rounding=ROUND_DOWN)
+        lots = (risk / (distance * contract)).quantize(step, rounding=ROUND_DOWN)
         return max(lots, minimum)
 
     @staticmethod
