@@ -409,6 +409,38 @@ def test_session_for_resolves_a_destination_across_connected_profiles(settings, 
         controller.close()
 
 
+def test_a_copy_config_routes_a_matching_wire_signal_to_its_account(settings, tmp_path):
+    from datetime import UTC, datetime
+
+    from matchtrader.core.settings import PRIMARY_PREFIX
+    from tests.dashboard.test_signal_copy import PendingBroker
+    controller = DashboardController(settings, tmp_path / 'data', interactive_copying=True)
+    try:
+        controller.signal_copy.configure_symbols({'BTCUSD': {'destination': 'NAS100', 'lots': '0.2', 'order_type': 'SOURCE'}})
+        gtr = PendingBroker()
+        gtr.connection = SimpleNamespace(account_id='644953')
+        controller.broker_profiles = SimpleNamespace(close=lambda: None, entries={
+            PRIMARY_PREFIX: {'api': None, 'state': 'disconnected'},
+            'GTR': {'api': gtr, 'state': 'connected'}})
+        controller.running = True
+        controller.configure_copy_config({
+            'id': 'c1', 'name': 'MAD to GTR', 'machine_id': 'HCAMM_MAD', 'source': 'r01Auto',
+            'destination_broker': 'GTR', 'destination_account': '644953',
+            'sizing': 'dollar', 'sizing_value': '5', 'mode': 'live', 'enabled': True})
+        signal = {'clientEventId': 'w1', 'machineId': 'HCAMM_MAD', 'source': 'r01Auto', 'kind': 'intent',
+                  'timestampUtc': datetime.now(UTC).isoformat(), 'label': 'R01_BTCUSD_long_1',
+                  'symbol': 'BTCUSD', 'side': 'long', 'entry': 100, 'stopLoss': 95, 'takeProfit': 110,
+                  'grade': 'PRIME', 'detail': 'resting limit at range edge'}
+        controller.receive_signals([signal])
+        assert gtr.calls and gtr.calls[-1]['instrument'] == 'NAS100'   # routed to the config's account
+        # A signal from a different machineId is ignored by this config.
+        gtr.calls.clear()
+        controller.receive_signals([{**signal, 'machineId': 'HCAMM_MIKE', 'clientEventId': 'w2'}])
+        assert not gtr.calls
+    finally:
+        controller.close()
+
+
 def test_r01_lane_dispatches_through_the_chosen_profile_not_the_capture_account(settings, tmp_path):
     import platform
 

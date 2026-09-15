@@ -114,6 +114,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.controller.copy_settings())
             if path == "/api/copy-controls":
                 return self.reply(200, self.server.controller.copy_controls_view())
+            if path == '/api/copy-configs':
+                return self.reply(200, self.server.controller.copy_configs_view())
             if path == "/api/event-meanings":
                 return self.reply(200, catalog())
             if path == "/api/status":
@@ -508,6 +510,22 @@ class Handler(BaseHTTPRequestHandler):
                 result = controller.signal_copy.configure_symbols(payload)
             elif self.path == '/api/r01-lane':
                 result = controller.configure_r01(payload)
+            elif self.path == '/api/copy-configs':
+                # Save (create or replace) one wire-driven copy configuration; surface the real reason.
+                try:
+                    result = controller.configure_copy_config(payload)
+                except (ValueError, TypeError) as exc:
+                    return self.reply(400, {'error': str(exc)})
+            elif self.path == '/api/copy-configs/state':
+                try:
+                    result = controller.set_copy_config_state(payload)
+                except (ValueError, TypeError) as exc:
+                    return self.reply(400, {'error': str(exc)})
+            elif self.path == '/api/copy-configs/delete':
+                try:
+                    result = controller.delete_copy_config(payload)
+                except (ValueError, TypeError) as exc:
+                    return self.reply(400, {'error': str(exc)})
             elif self.path == '/api/signal-copying':
                 result = controller.set_signal_copying(payload.get('enabled'))
             elif self.path == "/api/token/refresh":

@@ -27,6 +27,7 @@ from ..core.settings import PRIMARY_PREFIX, Settings
 from ..version import EVENT_SCHEMA_VERSION, MAPPING_SCHEMA_VERSION, VERSION
 from .copy_controls import CopyControls, load_controls, save_controls
 from .broker_session import BrokerSession
+from .copy_configs import CopyConfig, CopyConfigStore
 from .copy_settings import CopySettings, load_settings, save_settings
 from ..signals import SymbolMapStore
 from .p01_log import P01Log
@@ -111,6 +112,12 @@ class DashboardController:
         # worker already tails. It shares the symbol map and the Paper/Live master switch.
         self.r01_copy = SignalCopy(data_dir / 'relay' / 'r01', ledger=self.native_store, symbols=self.symbol_store)
         self.r01_episodes = {}
+        # Wire-driven per-strategy copy configurations. Each config copies one strategy's signals
+        # (its wire machineId + source) to one account, with its own sizing, grades and Paper/Live.
+        # Each keeps its own lane (engine, dispatcher and record); there is no global copy switch.
+        self.copy_config_store = CopyConfigStore(data_dir / 'copy-configs.json')
+        self.copy_lanes = {}
+        self.copy_config_since = {}
         self.p01_log = P01Log(p01_log_path or os.environ.get('AQF_P01_LOG_PATH', DEFAULT_P01_LOG_PATH))
         # Copy controls default to the safe state (paper, every source off) and are the only
         # gate on manual dispatch; PAMM publishing reads the forwarder lazily because the
@@ -501,7 +508,89 @@ class DashboardController:
                                     'result': 'Received from source; not broker execution evidence'},
                     })
                 self.native_store.notify_stream()
+            self._route_to_configs(payload)
             return result
+
+    def _lane_for(self, config):
+        """The per-config lane (engine, dispatcher and record) for one configuration, created once
+        and kept. Its `config` drives the engine directly: it exposes the machine_id, source,
+        destination, grades and sizing the engine reads."""
+        lane = self.copy_lanes.get(config.id)
+        if lane is None:
+            key = hashlib.sha256(config.id.encode()).hexdigest()[:16]
+            lane = SignalCopy(self.data_dir / 'configs' / key, ledger=self.native_store, symbols=self.symbol_store)
+            self.copy_lanes[config.id] = lane
+        lane.config = config
+        return lane
+
+    def _route_to_configs(self, payload):
+        """Wire-driven copying: every enabled config a signal matches (its machineId and source)
+        copies it, to that config's own account session, in that config's Paper/Live mode. One
+        config's failure never affects another."""
+        if not self.running:
+            return
+        for config in self.copy_config_store.list():
+            if not config.enabled:
+                continue
+            subset = [raw for raw in payload
+                      if config.matches(str(raw.get('machineId', '')), str(raw.get('source', '')))]
+            if not subset:
+                continue
+            lane = self._lane_for(config)
+            lane.copy_mode = config.mode
+            lane.armed = True
+            lane.armed_at = self.copy_config_since.setdefault(config.id, self.copy_mode_since)
+            api = self._session_for(config.destination_account)
+            try:
+                lane.receive(subset, api, config.destination_account, api is not None)
+            except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+                pass  # one config's failure must not disturb the others or the shared feed
+        self.native_store.notify_stream()
+
+    def copy_configs_view(self):
+        with self.lock:
+            return {'configs': [c.model_dump(mode='json') for c in self.copy_config_store.list()]}
+
+    def configure_copy_config(self, payload):
+        """Create or replace a saved copy configuration from the Copy page form."""
+        with self.lifecycle, self.lock:
+            if not self.interactive_copying:
+                raise ValueError('Interactive copying is disabled')
+            config = CopyConfig.model_validate(payload)
+            self.copy_config_store.upsert(config)
+            self._lane_for(config)
+            if config.enabled:
+                self.copy_config_since[config.id] = datetime.now(UTC)
+            self.native_store.notify_stream()
+            return self.copy_configs_view()
+
+    def set_copy_config_state(self, payload):
+        """Flip one config's Paper/Live or On/Off, independently of every other config."""
+        with self.lifecycle, self.lock:
+            if not isinstance(payload, dict) or not payload.get('id'):
+                raise ValueError('A config id is required')
+            mode, enabled = payload.get('mode'), payload.get('enabled')
+            if mode is not None and mode not in {'paper', 'live'}:
+                raise ValueError('mode must be paper or live')
+            if enabled is not None and not isinstance(enabled, bool):
+                raise ValueError('enabled must be a boolean')
+            config = self.copy_config_store.set_state(payload['id'], mode=mode, enabled=enabled)
+            if config.enabled:
+                self.copy_config_since[config.id] = datetime.now(UTC)   # a fresh no-replay mark on enable
+            self.native_store.notify_stream()
+            return self.copy_configs_view()
+
+    def delete_copy_config(self, payload):
+        with self.lifecycle, self.lock:
+            if not isinstance(payload, dict) or not payload.get('id'):
+                raise ValueError('A config id is required')
+            self.copy_config_store.delete(payload['id'])
+            lane = self.copy_lanes.pop(payload['id'], None)
+            if lane is not None:
+                lane.close()
+            self.copy_config_since.pop(payload['id'], None)
+            self.native_store.notify_stream()
+            return self.copy_configs_view()
 
     def receive_native(self, payload, *, capture_generation=None):
         """Record and submit new bridge orders according to the Paper/Live switch."""
@@ -867,6 +956,9 @@ class DashboardController:
         self.relay_logs.close()
         self.logging_events.close()
         self.signal_copy.close()
+        self.r01_copy.close()
+        for lane in self.copy_lanes.values():
+            lane.close()
 
     def receive(self, payload):
         with self.lock:
@@ -900,6 +992,7 @@ class DashboardController:
                 "positions": list(self.positions),
                 "positions_at": self.positions_at,
                 "copying": self.native.armed,
+                "copy_configs": [c.model_dump(mode="json") for c in self.copy_config_store.list()],
                 "route_configured": self.native.route is not None,
                 "csv_export_error": self.native_store.export_error,
                 "reconciliation_message": self.reconciliation_message,

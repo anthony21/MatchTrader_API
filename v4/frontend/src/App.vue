@@ -7,6 +7,7 @@ import OrdersWorkspace from './components/OrdersWorkspace.vue'
 import TokenSession from './components/TokenSession.vue'
 import NativeEvents from './components/NativeEvents.vue'
 import CopySettings from './components/CopySettings.vue'
+import CopyConfigs from './components/CopyConfigs.vue'
 import SignalCopySettings from './components/SignalCopySettings.vue'
 import SignalActivity from './components/SignalActivity.vue'
 import RawEvents from './components/RawEvents.vue'
@@ -233,9 +234,12 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         </details>
       </template>
       <template v-else-if="page === 'settings'">
-        <CopySettings :state="state" />
-        <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" :destinations="captureDestination" /></details>
-        <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" :destinations="destinations" endpoint="r01-lane" title="R01 lane" r01 /></details>
+        <CopyConfigs :configs="state.copy_configs || []" :profiles="brokerProfiles?.profiles || []" />
+        <details class="card" style="margin-top:20px;padding:20px"><summary>Legacy: native route and lanes (being retired)</summary>
+          <CopySettings :state="state" />
+          <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" :destinations="captureDestination" /></details>
+          <details class="card" style="margin-top:20px;padding:20px"><summary>R01 lane</summary><SignalCopySettings :state="state" :destinations="destinations" endpoint="r01-lane" title="R01 lane" r01 /></details>
+        </details>
       </template>
       <SymbolMap v-else-if="page === 'symbols'" :state="state" />
       <template v-else>
