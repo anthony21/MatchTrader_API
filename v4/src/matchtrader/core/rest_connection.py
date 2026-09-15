@@ -262,7 +262,15 @@ class RestConnection(BaseConnection):
     def _renew(self):
         """Reauthenticate or refresh once, according to the broker configuration."""
         if self.settings.session_renewal == "refresh":
-            return self._refresh()
+            try:
+                return self._refresh()
+            except (APIError, AuthenticationError, ProtocolError):
+                # The broker's refresh endpoint is unavailable or rejected the token. Keep the
+                # active session alive with a full re-login instead of letting it expire, when the
+                # active identity's own credentials back this session (as a broker profile's do).
+                if self._identity and self._identity == self.settings.email and self.settings.account_id:
+                    return self._login()
+                raise
         if not self._session_token:
             raise AuthenticationError("Login before renewing the session")
         if self._identity != self.settings.email:

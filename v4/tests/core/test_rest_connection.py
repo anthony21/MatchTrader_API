@@ -384,6 +384,23 @@ def test_refresh_budget_caps_failed_attempts(api_factory):
     assert sum(r.url.path.endswith("/refresh-token") for r in seen) == 4
 
 
+def test_refresh_failure_falls_back_to_relogin_to_keep_the_session_alive(api_factory):
+    import time as clock
+    # A broker whose refresh endpoint rejects the token must not leave the session to expire:
+    # renewal falls back to a full re-login with the profile's own credentials.
+    def handler(r):
+        if r.url.path.endswith("/refresh-token"):
+            return httpx.Response(401)
+    api, seen = api_factory(handler)
+    api.login()
+    api.connection._session_token = _jwt({"exp": int(clock.time()) + 60})   # under two minutes left
+    assert api.connection.renew_if_due() is True
+    assert sum(r.url.path.endswith("/refresh-token") for r in seen) == 1     # refresh was attempted
+    assert sum(r.url.path.endswith("mtr-login") for r in seen) == 2          # then a re-login kept it alive
+    assert api.connection.renewal_due() is False                            # session restored
+    api.close()
+
+
 def test_mutation_401_not_replayed(api_factory):
     api, seen = api_factory(lambda r: httpx.Response(401) if r.url.path.endswith("/position/open") else None)
     with pytest.raises(AuthenticationError):
