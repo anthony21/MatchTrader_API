@@ -40,6 +40,14 @@ def test_engine_refuses_with_the_reason_that_names_the_failed_check(changes, ctx
         SignalEngine(lane(), symbols()).decide(parse_signal(raw(**changes)), context(**ctx))
 
 
+def test_min_box_refuses_a_tight_box_and_admits_one_at_or_above_the_minimum():
+    # raw() has entry 100, sl 105, tp 95, so the box (|tp - sl|) is 10.
+    with pytest.raises(Refusal, match="below the 20 minimum"):
+        SignalEngine(lane(), symbols(min_box="20")).decide(parse_signal(raw()), context())
+    plan = SignalEngine(lane(), symbols(min_box="10")).decide(parse_signal(raw()), context())
+    assert plan.volume == Decimal("0.2")   # box exactly at the minimum is allowed
+
+
 def test_no_lane_means_copying_is_off():
     with pytest.raises(Refusal, match="copying is off"):
         SignalEngine(None, symbols()).decide(parse_signal(raw()), context())

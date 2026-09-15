@@ -106,6 +106,10 @@ class SignalEngine:
         if side not in {"BUY", "SELL"} or min(signal.entry, signal.stopLoss, signal.takeProfit) <= 0:
             raise Refusal("Intent needs a side and positive entry, stop and target")
         self._check_brackets(side, signal.entry, signal.stopLoss, signal.takeProfit)
+        box = abs(signal.takeProfit - signal.stopLoss)
+        if mapping.min_box and box < mapping.min_box:
+            raise Refusal(f"Box {box} is below the {mapping.min_box} minimum for {mapping.destination}; "
+                          "tight boxes stop out on entry noise")
         order_type = self._order_type(signal, mapping, side, ctx)
         lots = mapping.lots
         if not ctx.paper:

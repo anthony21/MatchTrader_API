@@ -22,6 +22,10 @@ class SymbolMapping(BaseModel):
     # SOURCE: the sender's own type. ENTRY: pending at the logged entry, type from the sender or
     # else from the destination quote. MARKET/LIMIT/STOP: always that type.
     order_type: Literal["MARKET", "LIMIT", "STOP", "SOURCE", "ENTRY"] = "SOURCE"
+    # Minimum box (take-profit to stop-loss distance) in this instrument's price units. An intent
+    # with a tighter box is refused: tight boxes sit inside the instrument's noise and spread, so
+    # they stop out almost instantly. 0 disables the filter (the default).
+    min_box: Decimal = Field(default=Decimal(0), ge=0)
 
 
 class SymbolMapStore:
