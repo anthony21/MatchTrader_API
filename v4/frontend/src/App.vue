@@ -247,7 +247,7 @@ onUnmounted(() => { disposed = true; stopStream?.(); clearTimeout(brokerTimer) }
         </details>
       </template>
       <template v-else-if="page === 'settings'">
-        <CopyConfigs :configs="state.copy_configs || []" :profiles="brokerProfiles?.profiles || []" :selected-account="selectedAccount" />
+        <CopyConfigs :configs="state.copy_configs || []" :accounts="loggedInAccounts" :machines="state.wire_sources || []" :selected-account="selectedAccount" />
         <details class="card" style="margin-top:20px;padding:20px"><summary>Legacy: native route and lanes (being retired)</summary>
           <CopySettings :state="state" />
           <details class="card" style="margin-top:20px;padding:20px"><summary>Strategy signal lane</summary><SignalCopySettings :state="state" :destinations="captureDestination" /></details>

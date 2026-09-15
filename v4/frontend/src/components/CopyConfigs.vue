@@ -3,7 +3,9 @@ import { computed, reactive, ref, watch } from 'vue'
 import { request } from '../api.js'
 // Saved wire-driven copy configurations. Each copies one strategy (its wire machineId + source)
 // to one account, with its own sizing, grades and its own Paper/Live and On/Off. No global copy.
-const props = defineProps({ configs: { type: Array, default: () => [] }, profiles: { type: Array, default: () => [] },
+const props = defineProps({ configs: { type: Array, default: () => [] },
+  accounts: { type: Array, default: () => [] },   // logged-in accounts: {account_id, profile, broker, capture}
+  machines: { type: Array, default: () => [] },   // wire sources seen: {machine_id, source, count}
   selectedAccount: { type: String, default: '' } })
 const GRADES = ['PRIME', 'STRONG', 'FAIR', 'POOR', 'WEAK', 'AVOID']
 const SOURCES = ['r01Auto', 'chain', 'panel']
@@ -13,21 +15,33 @@ const editing = ref('')
 const blank = () => ({ id: '', name: '', machine_id: '', source: 'r01Auto', connection_name: '',
   destination_broker: '', destination_account: '', sizing: 'lots', sizing_value: '', accepted_grades: [] })
 const form = reactive(blank())
-// Connected brokers, and the accounts available under the chosen one.
-const brokers = computed(() => props.profiles.filter(p => p.connection === 'connected' && p.account_id))
-const accounts = computed(() => brokers.value.filter(p => p.profile === form.destination_broker))
+// Connected brokers (distinct), and the accounts available under the chosen one, from the
+// logged-in accounts list. The machine picker offers the identities seen on the wire.
+const brokers = computed(() => {
+  const seen = new Map()
+  for (const a of props.accounts) if (!seen.has(a.profile)) seen.set(a.profile, { profile: a.profile, broker: a.broker })
+  return [...seen.values()]
+})
+const brokerAccounts = computed(() => props.accounts.filter(a => a.profile === form.destination_broker))
+const machinePick = ref('')   // "machine_id|source" chosen from the wire list, or '' for manual entry
+watch(machinePick, value => {
+  if (!value) return
+  const [machine_id, source] = value.split('|')
+  form.machine_id = machine_id; form.source = source || form.source
+})
 watch(() => form.destination_broker, () => {
-  if (!accounts.value.some(a => a.account_id === form.destination_account)) form.destination_account = ''
+  if (!brokerAccounts.value.some(a => a.account_id === form.destination_account)) form.destination_account = ''
 })
 function prefillDestination() {
   // A new config defaults its destination to the Selected account, so it "holds the keys" already.
-  const p = brokers.value.find(b => b.account_id === props.selectedAccount)
-  if (p) { form.destination_broker = p.profile; form.destination_account = p.account_id }
+  const a = props.accounts.find(x => x.account_id === props.selectedAccount)
+  if (a) { form.destination_broker = a.profile; form.destination_account = a.account_id }
 }
-function reset() { Object.assign(form, blank()); editing.value = ''; prefillDestination() }
+function reset() { Object.assign(form, blank()); editing.value = ''; machinePick.value = ''; prefillDestination() }
 watch(() => props.selectedAccount, () => { if (!editing.value && !form.destination_account) prefillDestination() }, { immediate: true })
 function edit(c) {
   Object.assign(form, { ...blank(), ...c, sizing_value: c.sizing_value ?? '', accepted_grades: [...(c.accepted_grades || [])] })
+  machinePick.value = props.machines.some(m => m.machine_id === c.machine_id && m.source === c.source) ? `${c.machine_id}|${c.source}` : ''
   editing.value = c.id
 }
 function toggleGrade(g, on) {
@@ -82,13 +96,17 @@ const brokerLabel = p => (brokers.value.find(b => b.profile === p)?.broker) || p
       <h3>{{ editing ? 'Edit configuration' : 'New configuration' }}</h3>
       <div class="grid">
         <label>Name<input v-model="form.name" required placeholder="MAD to GTR" /></label>
-        <label>Signal machine ID (source)<input v-model="form.machine_id" required placeholder="HCAMM_MAD" /></label>
-        <label>Signal family<select v-model="form.source"><option v-for="s in SOURCES" :key="s" :value="s">{{ s }}</option></select></label>
+        <label>Signal source (machine ID seen on the wire)<select v-model="machinePick">
+          <option value="">Type it manually…</option>
+          <option v-for="m in machines" :key="`${m.machine_id}|${m.source}`" :value="`${m.machine_id}|${m.source}`">{{ m.machine_id }} · {{ m.source }}{{ m.count ? ` (${m.count})` : '' }}</option>
+        </select></label>
+        <label v-if="!machinePick">Machine ID<input v-model="form.machine_id" required placeholder="HCAMM_MAD" /></label>
+        <label v-if="!machinePick">Signal family<select v-model="form.source"><option v-for="s in SOURCES" :key="s" :value="s">{{ s }}</option></select></label>
         <label>Connection ID (optional)<input v-model="form.connection_name" placeholder="leave blank to accept any" /></label>
         <label>Broker<select v-model="form.destination_broker"><option value="">Select a broker</option>
           <option v-for="b in brokers" :key="b.profile" :value="b.profile">{{ b.broker }}</option></select></label>
         <label>Account<select v-model="form.destination_account" required><option value="">Select an account</option>
-          <option v-for="a in accounts" :key="a.account_id" :value="a.account_id">{{ a.account_id }}</option></select></label>
+          <option v-for="a in brokerAccounts" :key="a.account_id" :value="a.account_id">{{ a.account_id }}</option></select></label>
         <label>Sizing<select v-model="form.sizing"><option v-for="[v, l] in SIZING" :key="v" :value="v">{{ l }}</option></select></label>
         <label v-if="form.sizing !== 'lots'">{{ form.sizing === 'percent' ? 'Percent of equity' : 'Dollar risk' }}<input v-model="form.sizing_value" type="number" min="0.00000001" step="any" required /></label>
       </div>

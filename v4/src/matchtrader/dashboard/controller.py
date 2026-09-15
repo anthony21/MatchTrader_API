@@ -497,6 +497,20 @@ class DashboardController:
                 seen.add(account)
         return out
 
+    def wire_sources(self):
+        """The strategy identities seen on the wire, most recent first, so the Copy page offers them
+        as choices instead of a free-text machine id. A machineId is the strategy source; its family
+        is the signal source (r01Auto/chain/panel)."""
+        try:
+            rows = self.signal_copy.db.execute(
+                "SELECT machine, source, count(*) c, max(received) latest FROM signals "
+                "WHERE machine IS NOT NULL AND machine != '' GROUP BY machine, source "
+                "ORDER BY latest DESC LIMIT 25").fetchall()
+        except Exception:
+            return []
+        return [{'machine_id': r['machine'], 'source': r['source'], 'count': r['c'], 'latest': r['latest']}
+                for r in rows]
+
     def account_view(self, account_id, parts=('balance', 'orders', 'positions')):
         """Read one logged-in account through its own held session (uuid, trading token, cookie),
         with no re-login. This is the endpoint other pages query for the Selected account's data."""
@@ -1035,6 +1049,7 @@ class DashboardController:
                 "copying": self.native.armed,
                 "copy_configs": [c.model_dump(mode="json") for c in self.copy_config_store.list()],
                 "logged_in_accounts": self.logged_in_accounts(),
+                "wire_sources": self.wire_sources(),
                 "route_configured": self.native.route is not None,
                 "csv_export_error": self.native_store.export_error,
                 "reconciliation_message": self.reconciliation_message,
