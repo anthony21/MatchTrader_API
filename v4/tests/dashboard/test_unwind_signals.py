@@ -255,9 +255,9 @@ def test_a_cancel_signal_over_the_wire_cancels_the_sent_order_without_any_click(
         assert status == 200 and json.loads(body)["broker_order_id"] == "aqua-1"
         call(server, "/api/copy-controls", "POST", {"mode": "live", "sources": {}}, session)
         cancel = lifecycle("cancelled", "cancel-1")
-        # A browser can never deliver a signal; only the authenticated relay can.
+        # A browser can never deliver a signal: a post carrying an Origin is refused. No token is
+        # required otherwise, so the local sender's post (no Origin) is accepted and read live.
         assert call(server, "/capture/signals", "POST", [cancel], {**sender, "Origin": "http://127.0.0.1:8765"})[0] == 401
-        assert call(server, "/capture/signals", "POST", [cancel], session)[0] == 401
         status, body = call(server, "/capture/signals", "POST", [cancel], sender)
         result = json.loads(body)["results"][0]
         assert status == 202 and result["status"] == "accepted" and result["copy_request"]["id"] == "aqua-1"
