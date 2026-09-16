@@ -9,7 +9,7 @@ the destination's own instrument limits.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from .shapes import BaseSignal
 
@@ -113,16 +113,22 @@ class SignalEngine:
                           "tight boxes stop out on entry noise")
         order_type = self._order_type(signal, mapping, side, ctx)
         lots = mapping.lots
+        entry, sl, tp = signal.entry, signal.stopLoss, signal.takeProfit
         if not ctx.paper:
             info = self._instrument(ctx.api, mapping.destination)
+            # Round to the destination's price grid before the checks below, so they run on the
+            # values that will actually be sent; a stop that rounds onto the entry is refused here
+            # rather than dispatched. Paper keeps the source prices: it must never read the broker.
+            entry, sl, tp = self._on_grid(info, entry, sl, tp)
+            self._check_brackets(side, entry, sl, tp)
             equity = self._equity(ctx.api) if self._sizing(lane) == "percent" else None
             lots = self._lots(lane, mapping, signal, info, equity)
             self._check_limits(info, lots, side)
             if order_type != "MARKET":
-                self._check_not_through_market(ctx, mapping.destination, side, order_type, signal.entry)
+                self._check_not_through_market(ctx, mapping.destination, side, order_type, entry)
         return OrderPlan(instrument=mapping.destination, side=side, order_type=order_type, volume=lots,
-                         price=None if order_type == "MARKET" else signal.entry,
-                         sl=signal.stopLoss, tp=signal.takeProfit, label=signal.label, scope=signal.scope)
+                         price=None if order_type == "MARKET" else entry,
+                         sl=sl, tp=tp, label=signal.label, scope=signal.scope)
 
     # ---- the checks --------------------------------------------------------------------------
     @staticmethod
@@ -160,6 +166,20 @@ class SignalEngine:
             raise Refusal("Entry equals current quote; pending type is ambiguous")
         below = signal.entry < reference
         return "LIMIT" if (below if side == "BUY" else not below) else "STOP"
+
+    @staticmethod
+    def _on_grid(info, *values):
+        """Round prices onto the destination instrument's own price grid: pricePrecision decimals,
+        ROUND_HALF_UP. Sources publish more precision than the broker can represent (SPX500 takes
+        one decimal, BTCUSD two), so send what it can rather than let it round by an unobserved rule.
+        A row without pricePrecision, or a zero/None value, is left unchanged. The caller re-checks
+        the bracket afterwards, since rounding can move a narrow stop onto the entry."""
+        precision = info.get("pricePrecision")
+        if precision is None:
+            return tuple(values)
+        quantum = Decimal(1).scaleb(-int(precision))
+        return tuple(v if v in (None, 0) else Decimal(str(v)).quantize(quantum, rounding=ROUND_HALF_UP)
+                     for v in values)
 
     @staticmethod
     def _instrument(api, symbol):

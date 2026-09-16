@@ -24,17 +24,20 @@ def symbols(order_type="LIMIT", lots="0.2"):
 
 
 class Broker:
-    def __init__(self, bid="99", ask="101", equity="1000"):
+    def __init__(self, bid="99", ask="101", equity="1000", price_precision=None):
         self.calls, self.bid, self.ask = [], Decimal(bid), Decimal(ask)
         self.equity = Decimal(equity)
+        self.price_precision = price_precision
         self.quote_time = int(datetime.now(UTC).timestamp() * 1000)
 
     def balance(self):
         return SimpleNamespace(equity=self.equity, currency="USD")
 
     def instruments(self):
-        return [SimpleNamespace(symbol="NAS100",
-                                model_dump=lambda: {"volumeMin": "0.1", "volumeMax": "10", "volumeStep": "0.1"})]
+        info = {"volumeMin": "0.1", "volumeMax": "10", "volumeStep": "0.1"}
+        if self.price_precision is not None:
+            info["pricePrecision"] = self.price_precision
+        return [SimpleNamespace(symbol="NAS100", model_dump=lambda: dict(info))]
 
     def quotes(self, **kwargs):
         return [SimpleNamespace(symbol="NAS100", bid=self.bid, ask=self.ask, timestampMs=self.quote_time)]

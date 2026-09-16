@@ -51,6 +51,24 @@ def test_min_box_refuses_a_tight_box_and_admits_one_at_or_above_the_minimum():
     assert SignalEngine(lane(min_box=Decimal("20"), min_box_enabled=False), symbols()).decide(parse_signal(raw()), context()).volume == Decimal("0.2")
 
 
+def test_live_prices_are_rounded_onto_the_destination_price_grid_before_sending():
+    # The source sends finer precision than the destination accepts (one decimal here). The live
+    # order carries the grid values that will actually be sent, not the raw source floats.
+    plan = SignalEngine(lane(), symbols()).decide(
+        parse_signal(raw(entry="100.06", stopLoss="105.04", takeProfit="94.94")),
+        context(api=Broker(price_precision=1)))
+    assert (plan.price, plan.sl, plan.tp) == (Decimal("100.1"), Decimal("105.0"), Decimal("94.9"))
+
+
+def test_a_stop_that_rounds_onto_the_entry_is_refused_not_sent():
+    # entry 100.02 and stop 100.03 both round to 100.0, so the rounded stop lands on the entry.
+    # The bracket is re-checked on the grid values and the intent is refused rather than dispatched.
+    with pytest.raises(Refusal, match="bracket"):
+        SignalEngine(lane(), symbols()).decide(
+            parse_signal(raw(entry="100.02", stopLoss="100.03", takeProfit="99.80")),
+            context(api=Broker(price_precision=1)))
+
+
 def test_sizing_modes_fixed_lots_fixed_dollar_and_percent_of_equity():
     # raw(): SELL, entry 100, sl 105 -> stop distance 5; helper instrument contractSize defaults to 1.
     fixed = SignalEngine(lane(), symbols(lots="0.2")).decide(parse_signal(raw()), context())
