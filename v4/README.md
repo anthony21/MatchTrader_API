@@ -35,33 +35,42 @@ poetry run python -m matchtrader.dashboard.cli
 
 Open **http://127.0.0.1:8765**. Select an account and use **Connect account** to log in and discover other accounts. **Start capture** records new R01 ledger observations and accepts authenticated events; **Stop & disconnect** stops capture and closes the SDK connection. The dashboard remains available to restart capture. It starts stopped with copying disarmed and copy controls on paper. The shell receives status, feeds, mappings, copy controls, verified trades and paper sends over one authenticated stream and does not poll its own API; only upstream broker orders and positions are refreshed on a timer, and only while work is outstanding. Native copying additionally needs saved Copy settings (or an explicit route file), a verified demo account and the Allow API trading control; `.env` alone cannot arm it.
 
-Set `MTR_R01_LEDGER` to your local `R01_TRADES.csv` path to watch new strategy activity. The frontend displays observations, request previews, held events, and an independently refreshed broker pending-order snapshot. No historic ledger replay or invented lot sizes. See [dashboard setup](docs/DASHBOARD.md), [registration and first connection](docs/FIRST_CONNECTION.md), and [routing status](docs/DIRECT_ROUTING.md).
+Set `AQF_R01_LEDGER` to your local `R01_TRADES.csv` path to watch new strategy activity. The frontend displays observations, request previews, held events, and an independently refreshed broker pending-order snapshot. No historic ledger replay or invented lot sizes. See [dashboard setup](docs/DASHBOARD.md), [registration and first connection](docs/FIRST_CONNECTION.md), and [routing status](docs/DIRECT_ROUTING.md).
 
 ## First-time setup
 
 1. Obtain an active Match-Trader account from your broker. Ask whether Platform API access is enabled for that account and allowed by its terms. Use the broker-supplied **Match-Trader terminal URL** and credentials; a marketing-site URL or client-office login may not be the same.
 2. Obtain the trading account ID if you have multiple accounts. Ask for a separate trading API origin if required. The client can discover `partnerId` (login `brokerId`) through platform details and `SYSTEM_UUID` through login. You do not need to register a new account through this SDK if one already exists.
-3. Copy `.env.example` to `.env` inside this folder. Fill in `MTR_PLATFORM_URL`, `MTR_EMAIL`, `MTR_PASSWORD`, and, when applicable, `MTR_ACCOUNT_ID`. Keep `.env` local. Do not paste passwords or tokens into chat, commit them, or include them in reports. Environment variables override `.env`.
-4. Start with `platform`, then `balance`. These are read operations. A 401 may mean incorrect credentials, expired session, missing permissions, or the broker's cookie convention; it does not establish which one. Current docs conflict about `co-auth`: `MTR_COOKIE_MODE=session` uses the session token; `account` uses `tradingAccountToken.token`. Confirm with the broker if the first read fails.
+3. Copy `.env.example` to `.env` inside this folder. Fill in `AQF_PLATFORM_URL`, `AQF_EMAIL`, `AQF_PASSWORD`, and, when applicable, `AQF_ACCOUNT_ID`. Keep `.env` local. Do not paste passwords or tokens into chat, commit them, or include them in reports. Environment variables override `.env`.
+4. Start with `platform`, then `balance`. These are read operations. A 401 may mean incorrect credentials, expired session, missing permissions, or the broker's cookie convention; it does not establish which one. Current docs conflict about `co-auth`: `AQF_COOKIE_MODE=session` uses the session token; `account` uses `tradingAccountToken.token`. Confirm with the broker if the first read fails.
 5. If your broker requires MFA, another authentication exchange, or a private streaming protocol, obtain that contract. This SDK implements the published password/one-time-token flows, not an invented MFA bypass.
 
 No credentials are needed to install the library or run its tests. Unit tests use mocked connections. Standalone Aqua login, balance, active orders, open positions and refresh returned HTTP 200 after configuring the shared SDK User-Agent. History, populated order/position responses and the broker-specific WebSocket flow remain separate live validation work. See [first connection](docs/FIRST_CONNECTION.md).
 
-### AI handoff and trade comparison
+### Option 1 - set it up with an AI agent
 
-Read [agent.md](agent.md), or ask another AI to read it. [AGENTS.md](AGENTS.md) points automatically discovered repository instructions to the same handoff. The portable [operations skill](.agents/skills/matchtrader-operations/SKILL.md) covers connection diagnosis, browser history export, account isolation, and evidence-based reconciliation.
+Point an AI coding agent at this folder and give it this instruction:
 
-Create a source bundle with `poetry run python scripts/build_handoff.py --output dist/matchtrader-v4-handoff.zip`. It includes source, tests, skills, docs, dependency locks, and Docker files; it excludes local credentials and account data. The recipient supplies their own `.env` and browser/tool access. This is a source handoff, not an installer that grants broker access.
+> Read `agent.md` in this folder and follow its operating contract. Install the project
+> using the manual steps in `README.md`, create `.env` from `.env.example`, and stop before
+> entering any credential - ask me for those values instead. Do not guess broker URLs,
+> account IDs, or cookie conventions, and do not enable writes.
 
-To reconcile an existing broker CSV with R01 records, run:
+[AGENTS.md](AGENTS.md) points automatically discovered repository instructions at the same
+handoff, so most agents find it without being told. The portable
+[operations skill](.agents/skills/matchtrader-operations/SKILL.md) covers connection
+diagnosis, browser history export, account isolation, and evidence-based reconciliation.
 
-```powershell
-poetry run python scripts/reconcile_r01.py --ledger /path/to/R01_TRADES.csv --broker /path/to/CLOSED_POSITIONS.csv --output data/comparison --start 2026-09-08T00:00:00Z --end 2026-09-09T00:00:00Z --account ACCOUNT_ID
-```
+Never paste passwords or tokens into an agent chat. Let the agent create `.env` from the
+example and fill in the secret values yourself.
 
-Replace the window with the actual export bounds. Optional `--verdicts /path/to/PMM_VERDICTS.csv` and `--slogs /path/to/ScriptsData` preserve relay and Strategy Manager evidence. The command generates a filterable HTML table, complete CSV, alternative candidates, unmatched intents, source snapshots and summary. It treats level matches as candidates and leaves unobserved send/receipt times blank. It does not silently assign a timezone to a broker export.
+To hand the project to someone else's AI, build a source bundle with
+`poetry run python scripts/build_handoff.py --output dist/matchtrader-v4-handoff.zip`. It
+includes source, tests, skills, docs, dependency locks, and Docker files; it excludes local
+credentials and account data. The recipient supplies their own `.env` and browser/tool
+access. This is a source handoff, not an installer that grants broker access.
 
-### Local Python installation (Windows PowerShell)
+### Option 2 - install it manually (Windows PowerShell)
 
 Requires Python 3.12 or later and [Poetry 2.2 or later (2.x)](https://python-poetry.org/docs/#installation). From the `v4` folder:
 
@@ -82,7 +91,7 @@ Use `poetry add <package>` to add a runtime dependency or
 constraints manually, run `poetry lock`. Commit `pyproject.toml` and `poetry.lock`
 together. Use `poetry sync --with test` to synchronize a development environment.
 
-### Docker
+### Option 3 - install it manually with Docker
 
 Install Docker Engine with Compose support, or a supported Docker Desktop installation. The current Windows development machine does not have Docker installed; container build/run validation remains outstanding. On a Windows Server host, use a supported Linux container host/VM instead of assuming Docker Desktop is supported.
 
@@ -100,6 +109,16 @@ docker compose --profile test run --build --rm tests
 Only run the test service in an offline unit-test environment; it has no broker credentials and Compose disables its network. For testing without any `.env` file, use `docker build --target test -t matchtrader-tests .` then `docker run --rm --network none matchtrader-tests`.
 
 The runtime container is non-root, has a read-only root filesystem, limits CPU to one core and memory to 512 MB, and sets NumPy BLAS threads to one. Results are written to the `./data` mount. On Linux, ensure that mount is writable by container UID 10001. Docker isolates and limits resource consumption; it does not inherently make Python faster or reduce memory use. Large histories may need shorter date windows or adjusted limits. The CLI exits and closes its connection after each command; it is not an idle background daemon.
+
+### Trade comparison
+
+To reconcile an existing broker CSV with R01 records, run:
+
+```powershell
+poetry run python scripts/reconcile_r01.py --ledger /path/to/R01_TRADES.csv --broker /path/to/CLOSED_POSITIONS.csv --output data/comparison --start 2026-09-08T00:00:00Z --end 2026-09-09T00:00:00Z --account ACCOUNT_ID
+```
+
+Replace the window with the actual export bounds. Optional `--verdicts /path/to/PMM_VERDICTS.csv` and `--slogs /path/to/ScriptsData` preserve relay and Strategy Manager evidence. The command generates a filterable HTML table, complete CSV, alternative candidates, unmatched intents, source snapshots and summary. It treats level matches as candidates and leaves unobserved send/receipt times blank. It does not silently assign a timezone to a broker export.
 
 ## Python usage: one public API facade
 
@@ -143,7 +162,7 @@ with MatchTraderAPI(settings) as api:
     candles = api.candles(request)
 ```
 
-Mutation endpoints exist but require `MTR_ENABLE_WRITES=true`. Registration is also a write. Use only broker-supported order types and instrument constraints. A sell limit's request fields are `orderSide='SELL'` and `type='LIMIT'`. Pending creation uses `price`, editing uses `priceOrder`, reading uses `activationPrice`. Unset SL/TP serialize as zero. Full close uses `positionId` and string volume; partial close uses numeric volume. `edit_pending_order()` returns the raw response because the current docs omit its success schema.
+Mutation endpoints exist but require `AQF_ENABLE_WRITES=true`. Registration is also a write. Use only broker-supported order types and instrument constraints. A sell limit's request fields are `orderSide='SELL'` and `type='LIMIT'`. Pending creation uses `price`, editing uses `priceOrder`, reading uses `activationPrice`. Unset SL/TP serialize as zero. Full close uses `positionId` and string volume; partial close uses numeric volume. `edit_pending_order()` returns the raw response because the current docs omit its success schema.
 
 The client does not automatically retry mutations. A transport timeout or unreadable mutation response raises `UnknownOutcomeError`; reconcile broker state before resubmission. A 401 during a safe read causes at most one refresh and retry. The connection refreshes the session after its documented 15-minute lifetime and caps refresh attempts at four per rolling hour. The refresh cookie is retained by HTTPX; broker-specific trading-account-token renewal is not inferred from the session refresh endpoint.
 
@@ -167,7 +186,7 @@ with MatchTraderAPI(Settings.from_env()) as broker:
 
 Replace ACCOUNT_1/ACCOUNT_2 with the actual Match-Trader trading account IDs, not challenge names. Both IDs must be returned by that login. Each account independently selects its tokens and system UUID from its login response and owns its own HTTP cookie jar, refresh state and optional socket. Each handle supports all 19 endpoint methods. `account_dataframe()` adds `mtr_account_id` and `mtr_platform_url` so combined analysis retains provenance. Keep different currencies separate when calculating P&L totals.
 
-`MTR_ACCOUNT_ID` still selects the default account for CLI commands and direct facade calls; it may be omitted if you only use explicit `for_account()` handles. Separate login credentials or brokers can use separate `Settings.from_env('account-a.env')` / `Settings.from_env('account-b.env')` files and independent `MatchTraderAPI` contexts. Environment variables override either file. Keep those credential files outside version control.
+`AQF_ACCOUNT_ID` still selects the default account for CLI commands and direct facade calls; it may be omitted if you only use explicit `for_account()` handles. Separate login credentials or brokers can use separate `Settings.from_env('account-a.env')` / `Settings.from_env('account-b.env')` files and independent `MatchTraderAPI` contexts. Environment variables override either file. Keep those credential files outside version control.
 
 `for_account()` defaults to the parent's login and trading API origin. For a different API origin, supply `trading_url='https://broker-confirmed-origin.example'`. Account-specific system UUID and WebSocket URL, protocol and headers are cleared when creating a different account handle; supply broker-confirmed per-account overrides when needed. For example `broker.for_account('ACCOUNT_2', ws_url=..., ws_headers_json=...)`. A child owns its own lease and must be closed independently, even if its parent closes first. No automatic trade copying or broadcasting is performed.
 
@@ -175,7 +194,7 @@ Multiple accounts are verified with mocked server responses, including different
 
 ## Optional persistent WebSocket
 
-REST is pooled HTTP. WebSocket is an **independent secondary transport**, not a way to send every REST endpoint over a socket. Published Platform API docs do not provide a current URL, authentication handshake, subscription frames or execution-event schema. Obtain these from your broker before setting `MTR_WS_URL`, optional `MTR_WS_SUBPROTOCOL` and `MTR_WS_HEADERS_JSON`.
+REST is pooled HTTP. WebSocket is an **independent secondary transport**, not a way to send every REST endpoint over a socket. Published Platform API docs do not provide a current URL, authentication handshake, subscription frames or execution-event schema. Obtain these from your broker before setting `AQF_WS_URL`, optional `AQF_WS_SUBPROTOCOL` and `AQF_WS_HEADERS_JSON`.
 
 ```python
 with MatchTraderAPI(Settings.from_env()) as api:

@@ -2,8 +2,9 @@
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from threading import RLock
+from types import SimpleNamespace
 
 from ..core.reason import local_reason, unconfirmed_reason
 from ..version import EVENT_SCHEMA_VERSION
@@ -155,7 +156,7 @@ class CaptureRouter:
         if event.action in {"CREATE", "EDIT", "CLOSE"}:
             if lots <= 0 or lots > mapping.max_lots:
                 raise ValueError("Converted quantity is outside route limit")
-            self._validate_instrument(api, symbol, lots, event)
+            event = self._validate_instrument(api, symbol, lots, event)
         common = {"instrument": symbol, "orderSide": event.side}
         if event.action == "CREATE":
             kwargs = {**common, "volume": lots, "slPrice": event.sl, "tpPrice": event.tp}
@@ -290,13 +291,51 @@ class CaptureRouter:
         return result
 
     @staticmethod
+    def instrument_info(api, symbol):
+        """Read the one destination instrument row, or refuse."""
+        instruments = api.instruments()
+        found = [i for i in instruments if getattr(i, "symbol", None) == symbol]
+        if len(found) != 1:
+            raise ValueError("Destination instrument is not uniquely available")
+        return found[0].model_dump()
+
+    @staticmethod
+    def quantise_prices(info, event):
+        """Return `event` with its prices on the destination's own price grid.
+
+        Sources publish raw floats (77498.42683130718, 7656.299999999985) at the
+        source platform's tick. The destination accepts `pricePrecision` decimals
+        and nothing finer, so send what it can represent rather than letting the
+        broker round by an unobserved rule. Zero means "no bracket" and is left
+        alone. A row without `pricePrecision` is passed through unchanged.
+
+        The caller must re-check bracket geometry afterwards: rounding can move
+        a narrow stop onto the entry.
+        """
+        precision = info.get("pricePrecision")
+        if precision is None:
+            return event
+        quantum = Decimal(1).scaleb(-int(precision))
+
+        def grid(value):
+            if value in (None, 0):
+                return value
+            return Decimal(str(value)).quantize(quantum, rounding=ROUND_HALF_UP)
+
+        return SimpleNamespace(**{**vars(event), "price": grid(getattr(event, "price", None)),
+                                  "sl": grid(getattr(event, "sl", None)),
+                                  "tp": grid(getattr(event, "tp", None))})
+
+    @staticmethod
     def _validate_instrument(api, symbol, lots, event):
+        """Validate the destination instrument and return the event on its price grid.
+
+        Prices are quantised before the bracket checks below, so the checks run on
+        the values that will actually be sent.
+        """
         try:
-            instruments = api.instruments()
-            found = [i for i in instruments if getattr(i, "symbol", None) == symbol]
-            if len(found) != 1:
-                raise ValueError("Destination instrument is not uniquely available")
-            info = found[0].model_dump()
+            info = CaptureRouter.instrument_info(api, symbol)
+            event = CaptureRouter.quantise_prices(info, event)
             minimum, maximum, step = (Decimal(str(info[k])) for k in ("volumeMin", "volumeMax", "volumeStep"))
             if step <= 0 or not minimum <= lots <= maximum or lots % step != 0:
                 raise ValueError("Quantity violates destination lot limits/step")
@@ -317,3 +356,4 @@ class CaptureRouter:
                     raise ValueError("SELL brackets are on the wrong side of entry")
         except (KeyError, TypeError):
             raise ValueError("Destination instrument limits could not be verified") from None
+        return event

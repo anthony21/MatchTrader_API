@@ -108,7 +108,12 @@ def send(store, controls, trade_id, volume, api, destination, *, route=None):
         if api is None:
             raise ValueError("Connect the destination account before sending live")
         try:
-            CaptureRouter._validate_instrument(api, prepared.symbol, prepared.lots, prepared.event)
+            on_grid = CaptureRouter._validate_instrument(api, prepared.symbol, prepared.lots, prepared.event)
+            # `prepare` built the request from the raw source prices; send what the
+            # destination's price grid can actually represent.
+            prepared.request["slPrice"], prepared.request["tpPrice"] = on_grid.sl, on_grid.tp
+            if "price" in prepared.request:
+                prepared.request["price"] = on_grid.price
         except ValueError:
             raise
         except Exception as exc:
