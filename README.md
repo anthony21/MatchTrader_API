@@ -1,5 +1,8 @@
 # Match-Trader Python client
 
+The [verified pending-order baseline](docs/ORDER_BASELINE.md) records the successful
+GooeyTrade demo submit/cancel test and the SDK structure to preserve in this branch.
+
 This is the **v3 application iteration**. Run all commands from this folder.
 See [versioning](docs/VERSIONING.md) for its layout and next-iteration workflow.
 
