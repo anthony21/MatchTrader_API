@@ -1,0 +1,440 @@
+{
+  "platform_details": {
+    "name": "platform_details",
+    "class_name": "GetPlatformDetails",
+    "method": "GET",
+    "path": "/manager/platform-details",
+    "write": false,
+    "request": null,
+    "response": "Platform",
+    "collection": null,
+    "payload": {},
+    "body": {
+      "partnerId": "broker-1",
+      "platformUrl": "https://broker.example",
+      "brokerName": "Demo"
+    }
+  },
+  "register": {
+    "name": "register",
+    "class_name": "Register",
+    "method": "POST",
+    "path": "/manager/user",
+    "write": true,
+    "request": "RegisterRequest",
+    "response": "Token",
+    "collection": null,
+    "payload": {
+      "offerId": "offer-1",
+      "email": "test@example.com",
+      "password": "not-a-secret",
+      "partnerId": "broker-1"
+    },
+    "body": {
+      "token": "registration-test"
+    }
+  },
+  "login": {
+    "name": "login",
+    "class_name": "Login",
+    "method": "POST",
+    "path": "/manager/mtr-login",
+    "write": false,
+    "request": "LoginRequest",
+    "response": "Authentication",
+    "collection": null,
+    "payload": {
+      "email": "test@example.com",
+      "password": "not-a-secret",
+      "brokerId": "broker-1"
+    },
+    "body": {
+      "token": "session-test",
+      "tradingAccounts": [
+        {
+          "tradingAccountId": "123",
+          "uuid": "account-uuid",
+          "tradingApiToken": "trading-test",
+          "tradingAccountToken": {
+            "token": "account-test"
+          },
+          "offer": {
+            "system": {
+              "uuid": "system-1"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "refresh_token": {
+    "name": "refresh_token",
+    "class_name": "RefreshToken",
+    "method": "POST",
+    "path": "/manager/refresh-token",
+    "write": false,
+    "request": null,
+    "response": null,
+    "collection": null,
+    "payload": {},
+    "body": null
+  },
+  "login_with_token": {
+    "name": "login_with_token",
+    "class_name": "LoginWithToken",
+    "method": "POST",
+    "path": "/manager/login/co/with-token",
+    "write": false,
+    "request": "LoginWithTokenRequest",
+    "response": "Authentication",
+    "collection": null,
+    "payload": {
+      "token": "one-time-test"
+    },
+    "body": {
+      "token": "session-test",
+      "tradingAccounts": [
+        {
+          "tradingAccountId": "123",
+          "uuid": "account-uuid",
+          "tradingApiToken": "trading-test",
+          "tradingAccountToken": {
+            "token": "account-test"
+          },
+          "offer": {
+            "system": {
+              "uuid": "system-1"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "quotes": {
+    "name": "quotes",
+    "class_name": "GetQuotes",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/quotations",
+    "write": false,
+    "request": "QuotesRequest",
+    "response": "Quote",
+    "collection": "body",
+    "payload": {
+      "symbols": "EURUSD,XAUUSD"
+    },
+    "body": [
+      {
+        "symbol": "EURUSD",
+        "bid": "1.10",
+        "ask": "1.11"
+      }
+    ]
+  },
+  "balance": {
+    "name": "balance",
+    "class_name": "GetBalance",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/balance",
+    "write": false,
+    "request": null,
+    "response": "Balance",
+    "collection": null,
+    "payload": {},
+    "body": {
+      "balance": "1000.01",
+      "equity": "999.99",
+      "currency": "USD"
+    }
+  },
+  "instruments": {
+    "name": "instruments",
+    "class_name": "GetInstruments",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/effective-instruments",
+    "write": false,
+    "request": null,
+    "response": "Instrument",
+    "collection": "instruments",
+    "payload": {},
+    "body": [
+      {
+        "symbol": "EURUSD",
+        "pricePrecision": 5
+      }
+    ]
+  },
+  "candles": {
+    "name": "candles",
+    "class_name": "GetCandles",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/candles",
+    "write": false,
+    "request": "CandlesRequest",
+    "response": "Candle",
+    "collection": "candles",
+    "payload": {
+      "symbol": "EURUSD",
+      "interval": "M15",
+      "from": "2026-09-07T00:00:00+00:00",
+      "to": "2026-09-08T00:00:00+00:00"
+    },
+    "body": {
+      "symbol": "EURUSD",
+      "interval": "M15",
+      "candles": [
+        {
+          "time": 1788782400000,
+          "open": 1.1,
+          "high": 1.12,
+          "low": 1.09,
+          "close": 1.11,
+          "volume": 100
+        }
+      ]
+    }
+  },
+  "open_positions": {
+    "name": "open_positions",
+    "class_name": "GetOpenPositions",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/open-positions",
+    "write": false,
+    "request": null,
+    "response": "Position",
+    "collection": "positions",
+    "payload": {},
+    "body": {
+      "positions": [
+        {
+          "id": "W1",
+          "symbol": "EURUSD",
+          "side": "BUY",
+          "volume": "0.01",
+          "openPrice": "1.10"
+        }
+      ]
+    }
+  },
+  "open_position": {
+    "name": "open_position",
+    "class_name": "OpenPosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/open",
+    "write": true,
+    "request": "OpenPositionRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "instrument": "EURUSD",
+      "orderSide": "BUY",
+      "volume": 0.01,
+      "slPrice": 0,
+      "tpPrice": 0,
+      "isMobile": false
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  },
+  "edit_position": {
+    "name": "edit_position",
+    "class_name": "EditPosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/edit",
+    "write": true,
+    "request": "EditPositionRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "instrument": "EURUSD",
+      "orderSide": "BUY",
+      "volume": 0.01,
+      "slPrice": 0,
+      "tpPrice": 0,
+      "isMobile": false,
+      "id": "W1"
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  },
+  "partial_close": {
+    "name": "partial_close",
+    "class_name": "PartialClose",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/close-partially",
+    "write": true,
+    "request": "PartialCloseRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "positionId": "W1",
+      "volume": 0.01,
+      "instrument": "EURUSD",
+      "orderSide": "BUY",
+      "isMobile": false
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  },
+  "close_position": {
+    "name": "close_position",
+    "class_name": "ClosePosition",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/position/close",
+    "write": true,
+    "request": "ClosePositionRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "positionId": "W1",
+      "volume": "0.01",
+      "instrument": "EURUSD",
+      "orderSide": "BUY"
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  },
+  "closed_positions": {
+    "name": "closed_positions",
+    "class_name": "GetClosedPositions",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/closed-positions",
+    "write": false,
+    "request": "ClosedPositionsRequest",
+    "response": "ClosedTrade",
+    "collection": "operations",
+    "payload": {
+      "from": "2026-09-07T00:00:00+00:00",
+      "to": "2026-09-08T00:00:00+00:00"
+    },
+    "body": {
+      "operations": [
+        {
+          "id": "W1",
+          "symbol": "EURUSD",
+          "side": "BUY",
+          "volume": "0.01",
+          "openPrice": "1.10",
+          "closePrice": "1.11",
+          "openTime": "2026-09-07T10:00:00Z",
+          "time": "2026-09-07T11:00:00Z",
+          "profit": "10",
+          "netProfit": "9",
+          "uid": "W1_close1",
+          "closingOrderID": "W2",
+          "closeReason": "CLOSE_REASON_PARTIAL"
+        }
+      ]
+    }
+  },
+  "active_orders": {
+    "name": "active_orders",
+    "class_name": "GetActiveOrders",
+    "method": "GET",
+    "path": "/mtr-api/SYSTEM_UUID/active-orders",
+    "write": false,
+    "request": null,
+    "response": "Order",
+    "collection": "orders",
+    "payload": {},
+    "body": {
+      "orders": [
+        {
+          "id": "W1",
+          "symbol": "EURUSD",
+          "side": "BUY",
+          "volume": "0.01",
+          "openPrice": "1.10",
+          "type": "LIMIT",
+          "activationPrice": "1.09"
+        }
+      ]
+    }
+  },
+  "create_pending_order": {
+    "name": "create_pending_order",
+    "class_name": "CreatePendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/create",
+    "write": true,
+    "request": "CreatePendingOrderRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "instrument": "EURUSD",
+      "orderSide": "BUY",
+      "volume": 0.01,
+      "slPrice": 0,
+      "tpPrice": 0,
+      "isMobile": false,
+      "price": 1.09,
+      "type": "LIMIT"
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  },
+  "edit_pending_order": {
+    "name": "edit_pending_order",
+    "class_name": "EditPendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/edit",
+    "write": true,
+    "request": "EditPendingOrderRequest",
+    "response": null,
+    "collection": null,
+    "payload": {
+      "instrument": "EURUSD",
+      "orderSide": "BUY",
+      "volume": 0.01,
+      "slPrice": 0,
+      "tpPrice": 0,
+      "isMobile": false,
+      "priceOrder": 1.09,
+      "type": "LIMIT",
+      "id": "W1"
+    },
+    "body": null
+  },
+  "cancel_pending_order": {
+    "name": "cancel_pending_order",
+    "class_name": "CancelPendingOrder",
+    "method": "POST",
+    "path": "/mtr-api/SYSTEM_UUID/pending-order/cancel",
+    "write": true,
+    "request": "CancelPendingOrderRequest",
+    "response": "Operation",
+    "collection": null,
+    "payload": {
+      "instrument": "EURUSD",
+      "id": "W1",
+      "orderSide": "BUY",
+      "type": "LIMIT",
+      "isMobile": false
+    },
+    "body": {
+      "status": "OK",
+      "nativeCode": null,
+      "errorMessage": "",
+      "orderId": "W1"
+    }
+  }
+}

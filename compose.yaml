@@ -1,0 +1,53 @@
+services:
+  client:
+    build:
+      context: .
+      target: runtime
+    env_file: .env
+    init: true
+    mem_limit: 512m
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: [test]
+    network_mode: none
+    mem_limit: 512m
+    cpus: 1.0
+  dashboard:
+    build:
+      context: .
+      target: dashboard
+    profiles: [dashboard]
+    env_file: .env
+    environment:
+      MTR_ENABLE_WRITES: "false"
+      MTR_R01_LEDGER: /source/R01_TRADES.csv
+    ports:
+      - "127.0.0.1:8765:8765"
+    init: true
+    mem_limit: 384m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    volumes:
+      - ./data:/app/data
+      - type: bind
+        source: ${MTR_LEDGER_DIRECTORY:-../../trials}
+        target: /source
+        read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
