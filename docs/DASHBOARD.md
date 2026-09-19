@@ -79,11 +79,11 @@ broker mapping. There are no synthetic broker IDs or simulated broker acceptance
 
 ## Sender contract
 
-POST JSON to `http://127.0.0.1:8765/events` with
-`Authorization: Bearer <MTR_BRIDGE_TOKEN>`. HTTP 202 acknowledges local capture only.
-The receiver requires **Start capture**. This is our versioned contract, not
-the unverified existing TradingBox payload. Do not redirect R01's shared relay
-configuration until its sender has been adapted.
+Current v3-base raw ingestion is described in [LIVE_SIGNALS.md](LIVE_SIGNALS.md).
+POST to `http://127.0.0.1:8765/signals`, or send WebSocket messages to
+`ws://127.0.0.1:8766/signals`. No sender token or Start capture action is required.
+The `/events` and `/capture/events` HTTP aliases feed the same raw signal journal.
+The historical typed example below remains a supported JSON payload.
 
 ```json
 {
@@ -134,7 +134,7 @@ so this container path is supplied but has not been run here.
 ## Security and operation
 
 The local control API requires a per-process session token and same-origin/Host
-checks. Sender authentication is separate. Broker passwords and tokens never enter
+checks. Local signal ingress requires no sender authentication. Broker passwords and tokens never enter
 Vue state, static assets, logs, or browser storage. Keep this service on loopback;
 it is not an internet-facing multi-user dashboard. Anyone controlling this Windows
 user session can access the local controls.

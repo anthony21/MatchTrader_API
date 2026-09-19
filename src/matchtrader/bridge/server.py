@@ -1,6 +1,5 @@
-"""Authenticated loopback-only shadow ingress, using the Python standard library."""
+"""Loopback-only shadow ingress, without sender authentication."""
 
-import hmac
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -12,8 +11,6 @@ MAX_BODY = 16384
 
 
 def ingest(authorization: str, body: bytes, token: str, bridge: ShadowBridge):
-    if not hmac.compare_digest(authorization.encode(), ("Bearer " + token).encode()):
-        return 401, {"error": "unauthorized"}
     if len(body) > MAX_BODY:
         return 413, {"error": "body_too_large"}
     try:
@@ -24,9 +21,7 @@ def ingest(authorization: str, body: bytes, token: str, bridge: ShadowBridge):
     return 202, result  # Local capture only, never broker acceptance.
 
 
-def serve(bridge: ShadowBridge, token: str, *, port: int = 8765):
-    if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
-        raise ValueError("Set a random bridge token of at least 32 non-whitespace ASCII characters")
+def serve(bridge: ShadowBridge, token: str = "", *, port: int = 8765):
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):

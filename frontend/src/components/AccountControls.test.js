@@ -2,14 +2,22 @@ import { mount } from '@vue/test-utils'
 import { expect, test } from 'vitest'
 import AccountControls from './AccountControls.vue'
 
-test('account changes and start controls emit explicit actions', async () => {
-  const wrapper = mount(AccountControls, { props: { selected: '123', busy: false,
-    state: { running: false, connection: 'disconnected', accounts: [{ id: '123' }, { id: '456' }] } } })
-  await wrapper.find('select').setValue('456')
-  expect(wrapper.emitted('update:selected')[0]).toEqual(['456'])
-  await wrapper.find('button.primary').trigger('click')
-  expect(wrapper.emitted('start')).toHaveLength(1)
-  await wrapper.setProps({ state: { running: true, accounts: [{ id: '123' }] } })
-  expect(wrapper.find('select').element.disabled).toBe(true)
-  expect(wrapper.find('button.primary').element.disabled).toBe(true)
+test('account choices and buttons follow broker connection state without capture controls', async () => {
+  const broker = { id: 'AQUA', label: 'AquaFunded', state: 'connected', selected_account: '123', accounts: ['123', '456'] }
+  const wrapper = mount(AccountControls, { props: { broker, busy: false } })
+  expect(wrapper.get('button.primary').element.disabled).toBe(true)
+  expect(wrapper.get('button.secondary').element.disabled).toBe(false)
+  await wrapper.get('select').setValue('456')
+  expect(wrapper.emitted('account')).toEqual([['456']])
+  await wrapper.get('button.secondary').trigger('click')
+  expect(wrapper.emitted('disconnect')).toHaveLength(1)
+  await wrapper.setProps({ broker: { ...broker, state: 'disconnected' } })
+  expect(wrapper.get('button.primary').element.disabled).toBe(false)
+  expect(wrapper.get('button.secondary').element.disabled).toBe(true)
+  await wrapper.get('button.primary').trigger('click')
+  expect(wrapper.emitted('connect')).toHaveLength(1)
+  expect(wrapper.text()).not.toContain('Start capture')
+  expect(wrapper.text()).not.toContain('Stop capture')
+  await wrapper.setProps({ broker: { ...broker, capture_running: true } })
+  expect(wrapper.get('select').element.disabled).toBe(true)
 })

@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
@@ -22,7 +21,6 @@ public sealed class DurableOutbox : IDisposable
         sequence = Directory.EnumerateFiles(config.Outbox, "*.json").Select(p => long.TryParse(Path.GetFileName(p).Split('-')[0], out var n) ? n : 0).DefaultIfEmpty(0).Max();
         client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
         client.Timeout = TimeSpan.FromSeconds(10);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.Token);
     }
 
     public void Enqueue(CaptureEvent item)

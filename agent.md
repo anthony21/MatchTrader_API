@@ -1,5 +1,16 @@
 # Match-Trader API agent handoff
 
+Current v3-base application authentication uses the broker registry described
+in [SESSION_MANAGER.md](docs/SESSION_MANAGER.md). Its application session owner
+supersedes the historical dashboard/account-owned login description below.
+Preserve the SDK baseline; put session policies and validation above it.
+Current Trading bridge ingress is the tokenless, always-on raw feed in
+[LIVE_SIGNALS.md](docs/LIVE_SIGNALS.md); historical capture/copying UI instructions
+below do not describe this signal page. Preserve broker authentication separately.
+The application parsing engine is documented in [PARSING_ENGINE.md](docs/PARSING_ENGINE.md).
+Its R01Signal model retains all 43 source fields; r01OrderShape projections are
+stored with each newly received message for later operations.
+
 This repository contains a Python client SDK, local shadow ingress, and a Vue dashboard. Help its owner install,
 connect, retrieve account data, analyze it with pandas/NumPy, and package the SDK.
 This is the `v3` application iteration. Run commands from this folder, and read

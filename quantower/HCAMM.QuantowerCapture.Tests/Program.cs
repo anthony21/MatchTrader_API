@@ -6,7 +6,7 @@ using TradingPlatform.BusinessLayer;
 var passed = 0;
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); Console.WriteLine("PASS " + name); passed++; }
 var directory = Path.Combine(Path.GetTempPath(), "hcamm-capture-test-" + Guid.NewGuid().ToString("N"));
-var config = new CaptureConfig { Token = new string('t', 40), Outbox = directory,
+var config = new CaptureConfig { Outbox = directory,
     Sources = new() { ["HCAMM:R01"] = "R01", ["verified-manual"] = "MANUAL" } };
 config.Validate();
 Check(config.Source(null) == "UNKNOWN" && config.Source("HCAMM:R01") == "R01", "CaptureConfig exact attribution");
@@ -20,7 +20,7 @@ Check(Directory.GetFiles(directory, "*.json").Length == 1, "DurableOutbox surviv
 var attempts = 0;
 using (var outbox = new DurableOutbox(config, new FakeHandler(async request => {
     var body = await request.Content!.ReadAsStringAsync();
-    Check(request.Headers.Authorization!.Parameter == config.Token, "DurableOutbox sender authentication");
+    Check(request.Headers.Authorization is null, "DurableOutbox requires no sender authentication");
     attempts++;
     return new HttpResponseMessage(attempts == 1 ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.Accepted)
         { Content = new StringContent("{\"event_id\":\"test-event\"}") };

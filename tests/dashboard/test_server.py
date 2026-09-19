@@ -6,6 +6,7 @@ import pytest
 
 from matchtrader.dashboard.controller import DashboardController
 from matchtrader.dashboard.server import DashboardHTTPServer, Handler
+from matchtrader.dashboard.signals import SignalHub
 
 
 class MemorySocket:
@@ -78,11 +79,11 @@ def test_api_requires_session_and_can_start_stop(server):
     assert call(server, "/api/unknown", headers=headers)[0] == 404
 
 
-def test_oversized_and_unauthenticated_ingress_rejected(server):
+def test_oversized_and_invalid_ingress_rejected_without_authentication(server):
     headers = {"X-Session-Token": "test-session", "Content-Length": "999999"}
     assert call(server, "/api/start", "POST", {}, headers)[0] == 413
-    assert call(server, "/events", "POST", {})[0] == 401
-    assert call(server, "/capture/events", "POST", {})[0] == 401
+    assert call(server, "/events", "POST", {})[0] == 400
+    assert call(server, "/capture/events", "POST", {})[0] == 400
 
 
 def test_native_ingress_acks_matching_id_only_after_durable_capture(server):
@@ -97,7 +98,7 @@ def test_native_ingress_acks_matching_id_only_after_durable_capture(server):
         "emitted_at": "2026-09-09T00:00:00Z",
         "snapshot": True,
     }
-    headers = {"Authorization": "Bearer " + server.bridge_token}
+    headers = {}
     status, raw = call(server, "/capture/events", "POST", payload, headers)
     result = json.loads(raw)
     assert status == 202 and result["event_id"] == "qt-event" and result["trade_id"]
@@ -114,3 +115,37 @@ def test_token_refresh_requires_session_and_routes_to_relogin(server):
     status, body = call(server, "/api/token/refresh", "POST", {}, {"X-Session-Token": "test-session"})
     assert status == 200 and json.loads(body)["token_expires_at"] == "new-expiry"
     assert calls == [True]
+
+
+def test_http_signal_aliases_require_no_token_or_capture_and_never_dispatch(server, tmp_path):
+    hub = SignalHub(tmp_path / "signals.sqlite3")
+    server.signal_hub = hub
+    server.controller.receive_native = lambda payload: pytest.fail("Signal intake must not dispatch trades")
+    try:
+        for path in ("/signals?source=R01", "/capture/events", "/events"):
+            status, body = call(server, path, "POST", {"event_id": "signal-test", "custom": 42})
+            assert status == 202 and json.loads(body)["event_id"] == "signal-test"
+        assert len(hub.recent()) == 3
+        assert hub.recent()[0]["source"] == "R01"
+        assert not server.controller.running and server.controller.api is None
+    finally:
+        hub.close()
+
+
+@pytest.mark.parametrize("path", ["/api/hcamm/events", "/signals/api/hcamm/events"])
+def test_b21_appended_route_preserves_raw_batch_without_control_auth(server, tmp_path, path):
+    hub = SignalHub(tmp_path / "b21.sqlite3")
+    server.signal_hub = hub
+    server.controller.receive_native = lambda payload: pytest.fail("Must not execute sender batches")
+    batch = [{"machineId": "nasdaq_30s", "source": "r01Auto", "kind": "intent",
+              "symbol": "BTCUSD", "clientEventId": "b21-test"}]
+    try:
+        status, body = call(server, path, "POST", batch)
+        assert status == 202 and json.loads(body)["status"] == "received"
+        assert hub.recent()[0]["payload"] == batch
+        assert hub.recent()[0]["raw"] == json.dumps(batch)
+        assert call(server, "/api/start", "POST", {})[0] == 401
+        assert call(server, path, "POST", batch,
+                    {"Host": "attacker.example:8765"})[0] == 403
+    finally:
+        hub.close()

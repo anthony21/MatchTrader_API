@@ -59,16 +59,16 @@ Default configuration path:
 ```json
 {
   "endpoint": "http://127.0.0.1:8765/capture/events",
-  "token": "REPLACE_WITH_LOCAL_MTR_BRIDGE_TOKEN",
   "outbox": "C:/Users/Administrator/AppData/Local/HCAMM/QuantowerCapture/outbox",
   "max_pending": 10000,
   "sources": {"HCAMM:R01": "R01", "HCAMM:X17": "X17"}
 }
 ```
 
-The private token must match `.env`'s `MTR_BRIDGE_TOKEN`. No Aqua tokens go into
-the extension. Restrict configuration/outbox access to the Windows user.
-Start dashboard capture before the observer. Its startup inventory is marked
+No sender token is required. See [LIVE_SIGNALS.md](LIVE_SIGNALS.md) for the current
+always-on, observation-only dashboard receiver. The historical capture/copying
+behavior described below is not invoked by that raw signal endpoint.
+The observer's startup inventory is marked
 `snapshot`; snapshots never submit trades. A stopped/unavailable receiver leaves
 events in the outbox. Events older than 30 seconds are captured but held rather
 than traded later. Disk failure or a full outbox is a capture fault: stop copying

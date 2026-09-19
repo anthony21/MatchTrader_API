@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shared R01 signal ? observed wire contract, draft 1",
+  "description": "One event within an incoming JSON array. Based on 87 recorded R01 events on 2026-09-18. All 43 properties were present in every sampled event. Extra fields remain accepted.",
+  "type": "object",
+  "required": [
+    "mode",
+    "source",
+    "kind",
+    "label",
+    "brokerOrderId",
+    "brokerPositionId",
+    "rangeKind",
+    "wasBeyond",
+    "wallId",
+    "boxInstanceId",
+    "symbol",
+    "side",
+    "entry",
+    "stopLoss",
+    "takeProfit",
+    "ladderGrade",
+    "stamp",
+    "l2Class",
+    "l2Word",
+    "l2DbandDigit",
+    "l2BirthRank",
+    "l2ChurnBand",
+    "l2PosInWin",
+    "tapHash",
+    "clientEventId",
+    "refClientEventId",
+    "tier",
+    "cell",
+    "rfx",
+    "inverted",
+    "orderType",
+    "volume",
+    "grade",
+    "ladderArm",
+    "detail",
+    "dryRun",
+    "machineId",
+    "robotName",
+    "accountId",
+    "connectionName",
+    "timestampUtc",
+    "sequence",
+    "instrument"
+  ],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "examples": [
+        "log",
+        "relay"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "examples": [
+        "r01Auto",
+        "r01Local"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "examples": [
+        "cancelled",
+        "heartbeat",
+        "intent",
+        "refused",
+        "touched"
+      ]
+    },
+    "label": {
+      "type": "string"
+    },
+    "brokerOrderId": {
+      "type": "string"
+    },
+    "brokerPositionId": {
+      "type": "string"
+    },
+    "rangeKind": {
+      "type": "string"
+    },
+    "wasBeyond": {
+      "type": "boolean"
+    },
+    "wallId": {
+      "type": "string"
+    },
+    "boxInstanceId": {
+      "type": "string"
+    },
+    "symbol": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "examples": [
+        "",
+        "long",
+        "short"
+      ]
+    },
+    "entry": {
+      "type": "number"
+    },
+    "stopLoss": {
+      "type": "number"
+    },
+    "takeProfit": {
+      "type": "number"
+    },
+    "ladderGrade": {
+      "type": "string"
+    },
+    "stamp": {
+      "type": "number"
+    },
+    "l2Class": {
+      "type": "string"
+    },
+    "l2Word": {
+      "type": "string"
+    },
+    "l2DbandDigit": {
+      "type": "integer"
+    },
+    "l2BirthRank": {
+      "type": "integer"
+    },
+    "l2ChurnBand": {
+      "type": "string"
+    },
+    "l2PosInWin": {
+      "type": "boolean"
+    },
+    "tapHash": {
+      "type": "string"
+    },
+    "clientEventId": {
+      "type": "string"
+    },
+    "refClientEventId": {
+      "type": "string"
+    },
+    "tier": {
+      "type": "string"
+    },
+    "cell": {
+      "type": "string"
+    },
+    "rfx": {
+      "type": "string"
+    },
+    "inverted": {
+      "type": "boolean"
+    },
+    "orderType": {
+      "type": "string",
+      "examples": [
+        "",
+        "limit"
+      ]
+    },
+    "volume": {
+      "type": "number"
+    },
+    "grade": {
+      "type": "string"
+    },
+    "ladderArm": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "dryRun": {
+      "type": "boolean"
+    },
+    "machineId": {
+      "type": "string"
+    },
+    "robotName": {
+      "type": "string"
+    },
+    "accountId": {
+      "type": "string"
+    },
+    "connectionName": {
+      "type": "string"
+    },
+    "timestampUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence": {
+      "type": "integer"
+    },
+    "instrument": {
+      "type": "null",
+      "description": "All observed values are null. Expand this definition when a populated instrument payload is captured."
+    }
+  },
+  "additionalProperties": true
+}

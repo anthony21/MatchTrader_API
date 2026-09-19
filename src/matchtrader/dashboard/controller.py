@@ -28,6 +28,7 @@ class DashboardController:
         api_factory=MatchTraderAPI,
         route=None,
         csv_limit=1000,
+        allow_discovery=False,
     ):
         self.settings = settings.model_copy(update={"enable_writes": route is not None})
         self.data_dir = data_dir
@@ -35,9 +36,9 @@ class DashboardController:
         self.api_factory = api_factory
         ids = list(dict.fromkeys([settings.account_id, *accounts]))
         self.accounts = [{"id": value, "verified": False} for value in ids if value]
-        if not self.accounts:
+        if not self.accounts and not allow_discovery:
             raise ValueError("Set MTR_ACCOUNT_ID before starting the dashboard")
-        self.selected = self.accounts[0]["id"]
+        self.selected = self.accounts[0]["id"] if self.accounts else ""
         self.connection = "disconnected"
         self.connection_message = "Connect to verify this account and discover your other accounts."
         self.capture_message = "Stopped. Starting captures new events only."
@@ -59,6 +60,8 @@ class DashboardController:
         self._open_journal()
 
     def _open_journal(self):
+        if not self.selected:
+            return
         key = hashlib.sha256((self.settings.platform_url + ":" + self.selected).encode()).hexdigest()[:20]
         self.bridge = ShadowBridge(self.selected, self.data_dir / f"{key}.sqlite3")
 
@@ -71,7 +74,8 @@ class DashboardController:
             if self.api:
                 self.api.close()
                 self.api = None
-            self.bridge.journal.close()
+            if self.bridge:
+                self.bridge.journal.close()
             self.selected = account_id
             self.connection = "disconnected"
             self.orders = []
@@ -182,12 +186,13 @@ class DashboardController:
             return self.native.receive(payload, self.api, self.selected)
 
     def refresh_session(self):
-        """Explicit button action: log in again on the selected account's session."""
+        """Renew through the session owner when a managed account handle is supplied."""
         with self.lifecycle, self.lock:
             if not self.api:
                 raise ValueError("Connect to the broker before refreshing the token")
             try:
-                auth = self.api.login()
+                refresh = getattr(self.api, "refresh", None)
+                auth = refresh() if refresh else self.api.login()
                 found = auth.tradingAccounts or auth.accounts
                 if not found:
                     selected = auth.selectedTradingAccount or auth.selectedAccount
@@ -286,7 +291,7 @@ class DashboardController:
             if tail:
                 tail.close()
 
-    def stop(self):
+    def stop(self, *, disconnect=True):
         with self.lifecycle:
             with self.lock:
                 self.running = False
@@ -298,18 +303,24 @@ class DashboardController:
                     raise RuntimeError("Observer has not stopped yet")
                 self.worker = None
             with self.lock:
-                if self.api:
+                if self.api and disconnect:
                     self.api.close()
-                self.api = None
+                if disconnect:
+                    self.api = None
                 self.token_message = ""
-                self.connection = "disconnected"
-                self.connection_message = "Connection closed. Existing broker orders were not changed."
+                self.connection = "connected" if self.api else "disconnected"
+                self.connection_message = (
+                    "Capture stopped. Broker session remains connected."
+                    if self.api
+                    else "Connection closed. Existing broker orders were not changed."
+                )
                 self.capture_message = "Stopped. New events are rejected until capture starts again."
                 return self.status()
 
     def close(self):
         self.stop()
-        self.bridge.journal.close()
+        if self.bridge:
+            self.bridge.journal.close()
         self.native_store.close()
 
     def receive(self, payload):
@@ -348,6 +359,8 @@ class DashboardController:
             }
 
     def feed(self):
+        if self.bridge is None:
+            return {"account_id": self.selected, "events": []}
         with self.lock, self.bridge.journal.lock:
             db = self.bridge.journal.db
             events = db.execute(

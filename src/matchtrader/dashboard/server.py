@@ -8,16 +8,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from ..bridge.server import MAX_BODY, ingest
+from ..bridge.server import ingest
+from .signals import MAX_SIGNAL
+
+# B21 treats its configured endpoint as a base URL and appends this route.
+SIGNAL_PATHS = frozenset({
+    "/signals", "/events", "/capture/events",
+    "/api/hcamm/events", "/signals/api/hcamm/events",
+})
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, controller, assets: Path, bridge_token: str, *, bind_and_activate=True):
+    def __init__(
+        self,
+        address,
+        controller,
+        assets: Path,
+        bridge_token: str = "",
+        *,
+        bind_and_activate=True,
+        signal_hub=None,
+        signal_port=8766,
+    ):
         self.controller = controller
         self.assets = assets.resolve()
-        self.bridge_token = bridge_token
+        self.signal_hub = signal_hub
+        self.signal_port = signal_port
         self.session_token = secrets.token_urlsafe(32)
         super().__init__(address, Handler, bind_and_activate=bind_and_activate)
 
@@ -53,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; connect-src 'self'; "
+            f"default-src 'self'; connect-src 'self' ws://127.0.0.1:{getattr(self.server, 'signal_port', 8766)} ws://localhost:{getattr(self.server, 'signal_port', 8766)}; "
             "style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         )
         self.send_header("Connection", "close")
@@ -71,7 +89,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.server.authorized(self.headers):
                 return self.reply(401, {"error": "Reload the dashboard to start a new local session"})
             if path == "/api/status":
-                return self.reply(200, self.server.controller.status())
+                status = self.server.controller.status()
+                status["signal_port"] = getattr(self.server, "signal_port", 8766)
+                return self.reply(200, status)
             if path == "/api/events":
                 return self.reply(200, self.server.controller.feed())
             if path == "/api/capture/events":
@@ -88,32 +108,35 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.server.trusted(self.headers):
             return self.reply(403, {"error": "Local same-origin access required"})
-        if self.path not in {"/events", "/capture/events"} and not self.server.authorized(self.headers):
+        signal_path = urlsplit(self.path).path
+        if signal_path not in SIGNAL_PATHS and not self.server.authorized(
+            self.headers
+        ):
             return self.reply(401, {"error": "Reload the dashboard to start a new local session"})
         try:
             lengths = self.headers.get_all("Content-Length", [])
             length = int(lengths[0]) if len(lengths) == 1 else -1
         except ValueError:
             length = -1
-        if not 0 <= length <= MAX_BODY or self.headers.get("Transfer-Encoding"):
+        if not 0 <= length <= MAX_SIGNAL or self.headers.get("Transfer-Encoding"):
             return self.reply(413, {"error": "Invalid request size"})
         try:
             body = self.rfile.read(length)
+            if signal_path in SIGNAL_PATHS and getattr(
+                self.server, "signal_hub", None
+            ):
+                from urllib.parse import parse_qs
+
+                source = parse_qs(urlsplit(self.path).query).get("source", [""])[0][:200]
+                return self.reply(202, self.server.signal_hub.publish(body, source))
             if self.path == "/capture/events":
-                token = self.server.bridge_token
-                if not token or not hmac.compare_digest(
-                    self.headers.get("Authorization", "").encode(), ("Bearer " + token).encode()
-                ):
-                    return self.reply(401, {"error": "Sender authentication required"})
                 result = self.server.controller.receive_native(json.loads(body))
                 return self.reply(202, result)
             if self.path == "/events":
-                if not self.server.bridge_token:
-                    return self.reply(503, {"error": "Configure the bridge token before attaching a sender"})
                 status, result = ingest(
-                    self.headers.get("Authorization", ""),
+                    "",
                     body,
-                    self.server.bridge_token,
+                    "",
                     self.server.controller,
                 )
                 return self.reply(status, result)
@@ -123,6 +146,10 @@ class Handler(BaseHTTPRequestHandler):
             controller = self.server.controller
             if self.path == "/api/connect":
                 result = controller.connect(payload.get("account_id"))
+            elif self.path == "/api/brokers/select":
+                result = controller.select_broker(payload.get("broker_id"))
+            elif self.path == "/api/brokers/disconnect":
+                result = controller.disconnect_broker(payload.get("broker_id"))
             elif self.path == "/api/start":
                 result = controller.start(payload.get("account_id"))
             elif self.path == "/api/stop":
